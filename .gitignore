@@ -1,0 +1,35 @@
+# Build and Cache
+.gradle/
+.android/
+.bito/
+node_modules/
+*.pyc
+__pycache__/
+.pytest_cache/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+*.log
+
+# ML Models (keep these, comment out if needed)
+# *.h5
+# *.pkl
+
+# Temporary files
+*.tmp
+*.temp
