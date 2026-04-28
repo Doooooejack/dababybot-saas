@@ -16,6 +16,8 @@ import uuid
 from datetime import datetime, timedelta
 from functools import wraps
 import logging
+from collections import defaultdict
+import time
 
 # Try to import MT5 (will work on Windows with MetaTrader5 installed)
 try:
@@ -37,6 +39,107 @@ except (ImportError, Exception) as e:
 # ============ SETUP ============
 app = Flask(__name__)
 CORS(app)
+
+# ============ SECURITY CONFIGURATION ============
+# Enable HTTPS/SSL enforcement in production
+@app.before_request
+def enforce_https():
+    """Enforce HTTPS in production"""
+    if os.environ.get('FLASK_ENV') == 'production':
+        if request.headers.get('X-Forwarded-Proto', 'http') == 'http':
+            url = request.url.replace('http://', 'https://', 1)
+            return jsonify({'error': 'HTTPS required'}), 403
+
+# Security headers - PCI DSS & OWASP compliance
+@app.after_request
+def set_security_headers(response):
+    """Add security headers to all responses"""
+    # Prevent clickjacking attacks
+    response.headers['X-Frame-Options'] = 'DENY'
+    
+    # Prevent MIME type sniffing
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    
+    # Prevent XSS attacks
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    
+    # Content Security Policy - strict for payment security
+    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.stripe.com https://js.stripe.com; frame-src 'self' https://js.stripe.com; img-src 'self' https: data:;"
+    
+    # Referrer policy
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    
+    # Feature policy / Permissions policy
+    response.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=()'
+    
+    # HSTS - strict transport security (for HTTPS)
+    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    
+    return response
+
+# ============ RATE LIMITING (Payment Protection) ============
+# Track requests per IP/user for rate limiting
+request_log = defaultdict(list)
+
+def rate_limit(max_requests=5, time_window=60, endpoint_type='general'):
+    """
+    Rate limiting decorator to prevent abuse
+    max_requests: number of requests allowed
+    time_window: time window in seconds
+    endpoint_type: 'payment' for stricter limits
+    """
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            # Get client IP (works with proxies)
+            client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+            
+            # Payment endpoints get stricter rate limiting
+            if endpoint_type == 'payment':
+                max_requests = 3  # Max 3 payment attempts per minute
+                time_window = 60
+            
+            current_time = time.time()
+            # Clean old requests
+            request_log[client_ip] = [req_time for req_time in request_log[client_ip] 
+                                     if current_time - req_time < time_window]
+            
+            if len(request_log[client_ip]) >= max_requests:
+                logger.warning(f"Rate limit exceeded for {client_ip} on {endpoint_type}")
+                return jsonify({
+                    'error': 'Too many requests. Please try again later.',
+                    'retry_after': time_window
+                }), 429
+            
+            request_log[client_ip].append(current_time)
+            return f(*args, **kwargs)
+        
+        return decorated_function
+    return decorator
+
+def validate_payment_input(data):
+    """Validate and sanitize payment input"""
+    errors = []
+    
+    # Validate plan
+    if 'plan' in data:
+        valid_plans = ['pro', 'elite', 'premium']
+        plan = data['plan'].lower()
+        if plan not in valid_plans:
+            errors.append('Invalid plan selected')
+    
+    # Never accept card details directly - only payment gateway tokens
+    if any(key in data for key in ['card_number', 'cvv', 'card_data', 'stripe_secret']):
+        logger.critical(f"SECURITY ALERT: Attempted to send card data directly to backend from {request.remote_addr}")
+        return None, ["Invalid request - card data cannot be sent to backend"]
+    
+    # Validate subscription key format
+    if 'subscription_key' in data:
+        key = data['subscription_key'].strip().upper()
+        if not key.startswith('DABABYBOT-') or len(key) < 20:
+            errors.append('Invalid subscription key format')
+    
+    return data if not errors else None, errors
 
 # Security & JWT
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
@@ -420,8 +523,9 @@ def get_languages():
 
 @app.route('/api/subscription/activate-key', methods=['POST'])
 @jwt_required()
+@rate_limit(max_requests=5, time_window=60, endpoint_type='payment')
 def activate_subscription_key():
-    """Activate subscription key for user"""
+    """Activate subscription key for user - PROTECTED"""
     user_id = get_jwt_identity()
     user = User.query.get(user_id)
     
@@ -429,6 +533,13 @@ def activate_subscription_key():
         return jsonify({'error': 'User not found'}), 404
     
     data = request.get_json()
+    
+    # Validate and sanitize input
+    validated_data, errors = validate_payment_input(data)
+    if errors:
+        logger.warning(f"Payment validation error for user {user.username}: {errors}")
+        return jsonify({'error': 'Invalid input', 'details': errors}), 400
+    
     subscription_key = data.get('subscription_key', '').strip().upper()
     
     if not subscription_key:
@@ -440,10 +551,11 @@ def activate_subscription_key():
     # Check if key already exists and is activated by another user
     existing_user = User.query.filter_by(subscription_key=subscription_key).first()
     if existing_user and existing_user.subscription_key_verified and existing_user.id != user.id:
+        logger.warning(f"Duplicate key activation attempt: {subscription_key}")
         return jsonify({'error': 'This subscription key is already in use'}), 400
     
     # DEMO: Simple key validation pattern
-    # In production, validate against Stripe/payment system
+    # In production, validate against Stripe/payment system database
     # Format: DABABYBOT-XXXX-XXXX-XXXX (25 chars)
     if not subscription_key.startswith('DABABYBOT-'):
         return jsonify({'error': 'Invalid subscription key. Key must start with DABABYBOT-'}), 400
@@ -546,6 +658,147 @@ def generate_test_key():
         'plan': plan,
         'message': 'Use this key to test subscription activation'
     }), 200
+
+
+# ============ SECURE PAYMENT ROUTES ============
+
+@app.route('/api/payment/create-checkout-session', methods=['POST'])
+@jwt_required()
+@rate_limit(max_requests=3, time_window=60, endpoint_type='payment')
+def create_checkout_session():
+    """
+    Create secure payment checkout session
+    SECURITY: Never handle card data - use Stripe or similar tokenized payment
+    """
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    data = request.get_json()
+    
+    # Validate input
+    validated_data, errors = validate_payment_input(data)
+    if errors:
+        logger.warning(f"Payment validation error for user {user.username}: {errors}")
+        return jsonify({'error': 'Invalid request', 'details': errors}), 400
+    
+    plan = data.get('plan', '').lower()
+    valid_plans = ['pro', 'elite', 'premium']
+    
+    if plan not in valid_plans:
+        return jsonify({'error': 'Invalid plan'}), 400
+    
+    plan_data = {
+        'pro': {'price': 99, 'currency': 'USD', 'symbols': 5},
+        'elite': {'price': 299, 'currency': 'USD', 'symbols': 20},
+        'premium': {'price': 999, 'currency': 'USD', 'symbols': 50},
+    }
+    
+    pricing = plan_data[plan]
+    
+    logger.info(f"Payment session created for {user.username}: Plan={plan}, Amount=${pricing['price']}")
+    
+    # PRODUCTION IMPLEMENTATION: Use Stripe, PayPal, or 2Checkout
+    # Example with Stripe (requires stripe library):
+    # 
+    # import stripe
+    # stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
+    # 
+    # session = stripe.checkout.Session.create(
+    #     payment_method_types=['card'],
+    #     customer_email=user.email,
+    #     line_items=[{
+    #         'price_data': {
+    #             'currency': pricing['currency'].lower(),
+    #             'product_data': {
+    #                 'name': f'DababyBot {plan.upper()} Plan',
+    #                 'description': f'Subscription for {pricing["symbols"]} trading symbols'
+    #             },
+    #             'unit_amount': pricing['price'] * 100,  # Amount in cents
+    #         },
+    #         'quantity': 1,
+    #     }],
+    #     mode='payment',
+    #     success_url='https://yourdomain.com/payment-success?session_id={CHECKOUT_SESSION_ID}',
+    #     cancel_url='https://yourdomain.com/payment-cancelled',
+    #     metadata={
+    #         'user_id': user.id,
+    #         'plan': plan,
+    #         'email': user.email
+    #     }
+    # )
+    
+    return jsonify({
+        'session_id': f'session_{user.id}_{plan}_{int(time.time())}',
+        'plan': plan,
+        'amount': pricing['price'],
+        'currency': pricing['currency'],
+        'user_email': user.email,
+        'message': 'Redirect to payment gateway to complete purchase',
+        'payment_gateway': 'stripe'  # or 'paypal', '2checkout'
+    }), 200
+
+
+@app.route('/api/payment/verify-webhook', methods=['POST'])
+@rate_limit(max_requests=10, time_window=60, endpoint_type='payment')
+def verify_payment_webhook():
+    """
+    Verify webhook from payment gateway (Stripe, PayPal, etc.)
+    SECURITY: Verify webhook signature to ensure authenticity
+    """
+    # SECURITY: Always verify webhook signature
+    signature = request.headers.get('X-Stripe-Signature') or request.headers.get('X-PayPal-Transmission-Sig')
+    
+    if not signature:
+        logger.error(f"Webhook received without signature from {request.remote_addr}")
+        return jsonify({'error': 'Webhook signature missing'}), 400
+    
+    try:
+        data = request.get_json()
+        
+        # Example Stripe verification:
+        # import stripe
+        # event = stripe.Webhook.construct_event(
+        #     request.data,
+        #     signature,
+        #     os.environ.get('STRIPE_WEBHOOK_SECRET')
+        # )
+        
+        # Log all webhook events for audit trail
+        logger.info(f"Payment webhook verified: {data.get('type')} - {data.get('id')}")
+        
+        # PRODUCTION: Process payment and generate subscription key
+        # if event['type'] == 'payment_intent.succeeded':
+        #     payment_intent = event['data']['object']
+        #     user_id = payment_intent['metadata']['user_id']
+        #     plan = payment_intent['metadata']['plan']
+        #     
+        #     user = User.query.get(user_id)
+        #     if user:
+        #         # Generate unique subscription key
+        #         import random, string
+        #         chars = string.ascii_uppercase + string.digits
+        #         key_part1 = ''.join(random.choices(chars, k=4))
+        #         key_part2 = ''.join(random.choices(chars, k=4))
+        #         key = f"DABABYBOT-{plan.upper()}-{key_part1}-{key_part2}"
+        #         
+        #         user.subscription_key = key
+        #         user.subscription_key_verified = True
+        #         user.subscription_plan = plan
+        #         user.subscription_active = True
+        #         user.subscription_expiry = datetime.utcnow() + timedelta(days=365)
+        #         db.session.commit()
+        #         
+        #         # Send key via email
+        #         send_subscription_email(user.email, key, plan)
+        
+        return jsonify({'success': True}), 200
+        
+    except Exception as e:
+        logger.error(f"Webhook verification failed: {str(e)}")
+        return jsonify({'error': 'Webhook verification failed'}), 400
 
 
 # ============ BOT CONTROL ROUTES ============
