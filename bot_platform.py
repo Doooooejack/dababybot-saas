@@ -78,7 +78,11 @@ class User(db.Model):
     
     # Subscription
     subscription_plan = db.Column(db.String(50), default='free')  # free, pro, elite
-    subscription_active = db.Column(db.Boolean, default=True)
+    subscription_active = db.Column(db.Boolean, default=False)
+    subscription_key = db.Column(db.String(100), unique=True, nullable=True)  # Unique license key
+    subscription_key_verified = db.Column(db.Boolean, default=False)  # Has key been activated
+    subscription_expiry = db.Column(db.DateTime, nullable=True)  # When subscription expires
+    key_activated_at = db.Column(db.DateTime, nullable=True)  # When key was activated
     max_symbols = db.Column(db.Integer, default=1)  # Per plan
     
     # Bot Control
@@ -412,6 +416,138 @@ def get_languages():
     return jsonify({'languages': languages}), 200
 
 
+# ============ SUBSCRIPTION KEY ROUTES ============
+
+@app.route('/api/subscription/activate-key', methods=['POST'])
+@jwt_required()
+def activate_subscription_key():
+    """Activate subscription key for user"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    data = request.get_json()
+    subscription_key = data.get('subscription_key', '').strip().upper()
+    
+    if not subscription_key:
+        return jsonify({'error': 'Subscription key is required'}), 400
+    
+    if len(subscription_key) < 20:
+        return jsonify({'error': 'Invalid subscription key format'}), 400
+    
+    # Check if key already exists and is activated by another user
+    existing_user = User.query.filter_by(subscription_key=subscription_key).first()
+    if existing_user and existing_user.subscription_key_verified and existing_user.id != user.id:
+        return jsonify({'error': 'This subscription key is already in use'}), 400
+    
+    # DEMO: Simple key validation pattern
+    # In production, validate against Stripe/payment system
+    # Format: DABABYBOT-XXXX-XXXX-XXXX (25 chars)
+    if not subscription_key.startswith('DABABYBOT-'):
+        return jsonify({'error': 'Invalid subscription key. Key must start with DABABYBOT-'}), 400
+    
+    # Extract subscription plan from key (format: DABABYBOT-PLAN-XXXX-XXXX)
+    key_parts = subscription_key.split('-')
+    if len(key_parts) < 4:
+        return jsonify({'error': 'Invalid subscription key format'}), 400
+    
+    plan = key_parts[1].lower()  # pro, elite, etc.
+    valid_plans = ['pro', 'elite', 'premium']
+    
+    if plan not in valid_plans:
+        return jsonify({'error': f'Invalid plan in key. Must be one of: {", ".join(valid_plans)}'}), 400
+    
+    # Activate subscription for 365 days
+    from datetime import timedelta as td
+    user.subscription_key = subscription_key
+    user.subscription_key_verified = True
+    user.subscription_plan = plan
+    user.subscription_active = True
+    user.subscription_expiry = datetime.utcnow() + td(days=365)
+    user.key_activated_at = datetime.utcnow()
+    
+    # Set max symbols based on plan
+    plan_limits = {
+        'pro': 5,
+        'elite': 20,
+        'premium': 50
+    }
+    user.max_symbols = plan_limits.get(plan, 5)
+    
+    db.session.commit()
+    
+    logger.info(f"Subscription key activated for user {user.username}: Plan={plan}, Expiry={user.subscription_expiry}")
+    
+    return jsonify({
+        'message': 'Subscription activated successfully!',
+        'plan': plan,
+        'expires_at': user.subscription_expiry.isoformat(),
+        'max_symbols': user.max_symbols
+    }), 200
+
+
+@app.route('/api/subscription/status', methods=['GET'])
+@jwt_required()
+def subscription_status():
+    """Get subscription status for user"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    # Check if subscription expired
+    is_expired = False
+    if user.subscription_expiry and user.subscription_expiry < datetime.utcnow():
+        is_expired = True
+        user.subscription_active = False
+        db.session.commit()
+    
+    return jsonify({
+        'subscription_plan': user.subscription_plan,
+        'subscription_active': user.subscription_active and not is_expired,
+        'subscription_key_verified': user.subscription_key_verified,
+        'subscription_expiry': user.subscription_expiry.isoformat() if user.subscription_expiry else None,
+        'key_activated_at': user.key_activated_at.isoformat() if user.key_activated_at else None,
+        'max_symbols': user.max_symbols,
+        'is_expired': is_expired,
+        'days_remaining': (user.subscription_expiry - datetime.utcnow()).days if user.subscription_expiry and not is_expired else 0
+    }), 200
+
+
+@app.route('/api/subscription/generate-test-key', methods=['POST'])
+@jwt_required()
+def generate_test_key():
+    """DEMO ONLY: Generate test subscription key for development/testing"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if not user or not user.is_admin:
+        return jsonify({'error': 'Only admins can generate test keys'}), 403
+    
+    data = request.get_json()
+    plan = data.get('plan', 'pro').lower()  # pro, elite, premium
+    
+    if plan not in ['pro', 'elite', 'premium']:
+        return jsonify({'error': 'Invalid plan. Must be: pro, elite, or premium'}), 400
+    
+    # Generate demo key: DABABYBOT-PLAN-RANDOM-RANDOM
+    import random
+    import string
+    chars = string.ascii_uppercase + string.digits
+    random_part1 = ''.join(random.choices(chars, k=4))
+    random_part2 = ''.join(random.choices(chars, k=4))
+    test_key = f"DABABYBOT-{plan.upper()}-{random_part1}-{random_part2}"
+    
+    return jsonify({
+        'test_key': test_key,
+        'plan': plan,
+        'message': 'Use this key to test subscription activation'
+    }), 200
+
+
 # ============ BOT CONTROL ROUTES ============
 
 @app.route('/api/bot/start', methods=['POST'])
@@ -423,6 +559,22 @@ def start_bot():
     
     if not user:
         return jsonify({'error': 'User not found'}), 404
+    
+    # CHECK SUBSCRIPTION - bot requires active subscription
+    if not user.subscription_key_verified or not user.subscription_active:
+        return jsonify({
+            'error': 'Active subscription required to run bot',
+            'requires_subscription': True
+        }), 403
+    
+    # Check if subscription expired
+    if user.subscription_expiry and user.subscription_expiry < datetime.utcnow():
+        user.subscription_active = False
+        db.session.commit()
+        return jsonify({
+            'error': 'Subscription has expired. Please renew your subscription.',
+            'subscription_expired': True
+        }), 403
     
     if user.bot_running:
         return jsonify({'error': 'Bot already running'}), 400

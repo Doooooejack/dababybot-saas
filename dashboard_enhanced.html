@@ -564,6 +564,28 @@
             <p>Plan: <strong id="user-plan" style="color: #66d9ff;">Free</strong></p>
             <p>Bot Status: <span id="bot-status" style="color: #aaa;"><span class="bot-indicator stopped"></span>Disconnected</span></p>
             
+            <!-- SUBSCRIPTION KEY SECTION -->
+            <div id="subscription-section" style="background: linear-gradient(135deg, #1a3a4a 0%, #0a2a3a 100%); padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #ffa94d;">
+                <h3 style="margin-top: 0; color: #ffa94d;">🔑 Subscription Required</h3>
+                <div id="subscription-status-msg"></div>
+                
+                <div id="subscription-inactive" style="display: block;">
+                    <p style="color: #888; margin-bottom: 15px;">Enter your subscription key to unlock the trading bot and access premium features.</p>
+                    <label><strong>Enter Subscription Key:</strong></label>
+                    <input type="text" id="subscription-key-input" placeholder="DABABYBOT-PLAN-XXXX-XXXX" style="font-family: monospace; letter-spacing: 2px;">
+                    <button class="success" onclick="activateSubscriptionKey()">✅ Activate Subscription</button>
+                    <p style="color: #666; font-size: 0.85rem; margin-top: 10px;">💡 Don't have a key? <a href="#" onclick="alert('Visit our website to purchase a subscription'); return false;" style="color: #4da6ff; text-decoration: none;">Get one here</a></p>
+                </div>
+                
+                <div id="subscription-active" style="display: none;">
+                    <p style="color: #51cf66; font-weight: bold; margin-bottom: 10px;">✅ Subscription Active</p>
+                    <p><strong>Plan:</strong> <span id="sub-plan-display" style="color: #4da6ff; text-transform: uppercase;"></span></p>
+                    <p><strong>Expires:</strong> <span id="sub-expiry-display" style="color: #ffa94d;"></span></p>
+                    <p><strong>Days Remaining:</strong> <span id="sub-days-display" style="color: #69f0ae;"></span></p>
+                    <p><strong>Max Symbols:</strong> <span id="sub-symbols-display" style="color: #4da6ff;"></span></p>
+                </div>
+            </div>
+            
             <h3>🔗 Connect MT5 Account</h3>
             <p style="color: #888; font-size: 0.9rem;">Connect your MetaTrader 5 account to start automated trading</p>
             
@@ -758,6 +780,7 @@
                 
                 showTab('dashboard');
                 loadStats();
+                checkSubscriptionStatus();  // Check subscription on load
             } catch (err) {
                 alert('Error loading profile');
             }
@@ -775,6 +798,74 @@
                 document.getElementById('stat-pnl').textContent = '$' + stats.total_pnl.toFixed(2);
                 document.getElementById('stat-avg').textContent = '$' + stats.avg_pnl.toFixed(2);
             } catch (err) {}
+        }
+        
+        async function checkSubscriptionStatus() {
+            try {
+                const res = await fetch('/api/subscription/status', {
+                    headers: { 'Authorization': 'Bearer ' + authToken }
+                });
+                const sub = await res.json();
+                
+                const inactiveDiv = document.getElementById('subscription-inactive');
+                const activeDiv = document.getElementById('subscription-active');
+                const statusMsg = document.getElementById('subscription-status-msg');
+                
+                if (sub.subscription_active && sub.subscription_key_verified) {
+                    // Show active subscription
+                    inactiveDiv.style.display = 'none';
+                    activeDiv.style.display = 'block';
+                    document.getElementById('sub-plan-display').textContent = sub.subscription_plan;
+                    document.getElementById('sub-expiry-display').textContent = new Date(sub.subscription_expiry).toLocaleDateString();
+                    document.getElementById('sub-days-display').textContent = sub.days_remaining + ' days';
+                    document.getElementById('sub-symbols-display').textContent = sub.max_symbols;
+                    statusMsg.innerHTML = '<div class="success">✅ Subscription verified. Bot is ready to use!</div>';
+                } else {
+                    // Show inactive - need key
+                    inactiveDiv.style.display = 'block';
+                    activeDiv.style.display = 'none';
+                    if (sub.is_expired) {
+                        statusMsg.innerHTML = '<div class="error">❌ Your subscription has expired. Please renew to continue using the bot.</div>';
+                    } else {
+                        statusMsg.innerHTML = '<div class="error">❌ No active subscription. Enter your key to activate.</div>';
+                    }
+                }
+            } catch (err) {
+                console.error('Error checking subscription:', err);
+            }
+        }
+        
+        async function activateSubscriptionKey() {
+            const key = document.getElementById('subscription-key-input').value.trim();
+            const msgDiv = document.getElementById('subscription-status-msg');
+            
+            if (!key) {
+                msgDiv.innerHTML = '<div class="error">❌ Please enter your subscription key</div>';
+                return;
+            }
+            
+            try {
+                const res = await fetch('/api/subscription/activate-key', {
+                    method: 'POST',
+                    headers: { 
+                        'Authorization': 'Bearer ' + authToken,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ subscription_key: key })
+                });
+                
+                const data = await res.json();
+                
+                if (res.ok) {
+                    msgDiv.innerHTML = '<div class="success">✅ ' + data.message + '</div>';
+                    document.getElementById('subscription-key-input').value = '';
+                    setTimeout(() => checkSubscriptionStatus(), 1000);
+                } else {
+                    msgDiv.innerHTML = '<div class="error">❌ ' + data.error + '</div>';
+                }
+            } catch (err) {
+                msgDiv.innerHTML = '<div class="error">❌ Network error</div>';
+            }
         }
         
         async function connectMT5() {
@@ -827,12 +918,21 @@
                     body: JSON.stringify({ symbols })
                 });
                 
+                const data = await res.json();
+                
                 if (res.ok) {
                     localStorage.setItem('bot_running', 'true');
                     alert('✅ Bot is RUNNING!');
                     updateBotStatus();
                 } else {
-                    alert('❌ Failed to start bot');
+                    // Check if subscription required
+                    if (data.requires_subscription) {
+                        alert('❌ Active subscription required to run the bot.\n\nPlease enter your subscription key in the "Subscription Required" section above.');
+                    } else if (data.subscription_expired) {
+                        alert('❌ Your subscription has expired.\n\nPlease renew your subscription to continue using the bot.');
+                    } else {
+                        alert('❌ Failed to start bot: ' + data.error);
+                    }
                 }
             }
         }
