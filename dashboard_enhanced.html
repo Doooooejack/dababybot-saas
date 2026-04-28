@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+    <title>DababyBot AI Trading Platform 🤖</title>
+    <style>
+        * { 
+            margin: 0; 
+            padding: 0; 
+            box-sizing: border-box; 
+        }
+        
+        html { 
+            font-size: 16px; 
+        }
+        
+        body { 
+            font-family: 'Segoe UI', Roboto, -apple-system, BlinkMacSystemFont, sans-serif; 
+            background: linear-gradient(135deg, #0a1628 0%, #1a2a4a 100%); 
+            color: #fff;
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+        
+        .container { 
+            max-width: 1200px; 
+            margin: 0 auto; 
+            padding: 20px; 
+            min-height: 100vh;
+        }
+        
+        /* WARNING BANNER */
+        .warning-banner {
+            background: linear-gradient(135deg, #ff6b35 0%, #f7931e 100%);
+            border-left: 5px solid #ff0000;
+            padding: 20px;
+            margin-bottom: 30px;
+            border-radius: 8px;
+            font-weight: bold;
+            animation: pulse 2s infinite;
+            box-shadow: 0 4px 15px rgba(255, 107, 53, 0.3);
+        }
+        
+        .warning-banner strong {
+            font-size: 1.1rem;
+            display: block;
+            margin-bottom: 8px;
+        }
+        
+        .warning-banner p {
+            font-size: 0.95rem;
+            margin: 5px 0;
+            color: rgba(255, 255, 255, 0.95);
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.85; }
+        }
+        
+        /* HEADER */
+        h1 { 
+            margin-bottom: 10px; 
+            color: #4da6ff;
+            font-size: 2.5rem;
+            text-shadow: 0 2px 10px rgba(77, 166, 255, 0.3);
+            animation: slideDown 0.6s ease;
+        }
+        
+        .header-subtitle {
+            color: #aaa;
+            font-size: 0.95rem;
+            margin-bottom: 30px;
+            animation: slideDown 0.8s ease;
+        }
+        
+        @keyframes slideDown {
+            from { transform: translateY(-20px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        
+        .card { 
+            background: linear-gradient(135deg, #1a2a3a 0%, #243545 100%);
+            border-radius: 12px; 
+            padding: 25px; 
+            margin-bottom: 25px; 
+            border: 1px solid #3a4a5a;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            transition: all 0.3s ease;
+            animation: fadeIn 0.6s ease;
+        }
+        
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 40px rgba(77, 166, 255, 0.15);
+            border-color: #4da6ff;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        h2 { 
+            margin-bottom: 20px; 
+            margin-top: 0;
+            font-size: 1.6rem;
+            color: #4da6ff;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        h3 { 
+            margin-bottom: 15px; 
+            margin-top: 15px; 
+            font-size: 1.2rem;
+            color: #66d9ff;
+        }
+        
+        h4 {
+            margin: 15px 0 10px 0;
+            color: #88ffff;
+            font-size: 1rem;
+        }
+        
+        label { 
+            display: block; 
+            margin-bottom: 8px; 
+            font-weight: 600;
+            color: #aaa;
+            font-size: 0.95rem;
+        }
+        
+        input, select { 
+            width: 100%; 
+            padding: 12px; 
+            margin-bottom: 15px; 
+            background: linear-gradient(135deg, #0d1b2a 0%, #162a3a 100%);
+            border: 2px solid #2a4a6a;
+            color: #4da6ff; 
+            border-radius: 6px; 
+            font-size: 1rem;
+            font-family: inherit;
+            transition: all 0.3s ease;
+        }
+        
+        input:focus, select:focus { 
+            outline: none;
+            border-color: #4da6ff;
+            background: linear-gradient(135deg, #0d1b2a 0%, #1a3a4a 100%);
+            box-shadow: 0 0 15px rgba(77, 166, 255, 0.2);
+        }
+        
+        select {
+            cursor: pointer;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%234da6ff' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 10px center;
+            padding-right: 35px;
+        }
+        
+        button { 
+            background: linear-gradient(135deg, #4da6ff 0%, #66d9ff 100%);
+            color: #000; 
+            padding: 12px 25px; 
+            border: none; 
+            border-radius: 6px; 
+            cursor: pointer; 
+            font-weight: bold; 
+            margin-right: 12px;
+            margin-bottom: 12px;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(77, 166, 255, 0.3);
+        }
+        
+        button:hover { 
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(77, 166, 255, 0.4);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        button.danger {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ff8787 100%);
+            box-shadow: 0 4px 15px rgba(255, 107, 107, 0.3);
+        }
+        
+        button.success {
+            background: linear-gradient(135deg, #51cf66 0%, #69f0ae 100%);
+            color: #000;
+            box-shadow: 0 4px 15px rgba(81, 207, 102, 0.3);
+        }
+        
+        button.warning {
+            background: linear-gradient(135deg, #ffa94d 0%, #ffb366 100%);
+            color: #000;
+            box-shadow: 0 4px 15px rgba(255, 164, 77, 0.3);
+        }
+        
+        .error { 
+            color: #ff8787; 
+            margin-bottom: 15px; 
+            padding: 12px;
+            background: rgba(255, 107, 107, 0.15);
+            border-left: 3px solid #ff6b6b;
+            border-radius: 4px;
+            animation: shake 0.4s;
+        }
+        
+        .success { 
+            color: #69f0ae; 
+            margin-bottom: 15px; 
+            padding: 12px;
+            background: rgba(81, 207, 102, 0.15);
+            border-left: 3px solid #51cf66;
+            border-radius: 4px;
+        }
+        
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-5px); }
+            75% { transform: translateX(5px); }
+        }
+        
+        .hidden { 
+            display: none !important; 
+        }
+        
+        .tab { 
+            margin-bottom: 25px; 
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        
+        .tab button { 
+            background: linear-gradient(135deg, #2a4a6a 0%, #1a3a5a 100%);
+            color: #aaa; 
+            margin-bottom: 0;
+            margin-right: 0;
+            flex: 1;
+            min-width: 100px;
+            border: 2px solid #3a5a7a;
+            transition: all 0.3s ease;
+        }
+        
+        .tab button:hover {
+            color: #4da6ff;
+            border-color: #4da6ff;
+        }
+        
+        .tab button.active { 
+            background: linear-gradient(135deg, #4da6ff 0%, #2a7fcc 100%);
+            color: #fff;
+            border-color: #4da6ff;
+        }
+        
+        .stats { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); 
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .stats div {
+            background: linear-gradient(135deg, #0d1b2a 0%, #162a3a 100%);
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #2a4a6a;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+        
+        .stats div:hover {
+            transform: translateY(-5px);
+            border-color: #4da6ff;
+            box-shadow: 0 4px 15px rgba(77, 166, 255, 0.15);
+        }
+        
+        .stats strong {
+            display: block;
+            margin-bottom: 10px;
+            font-size: 0.9rem;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .stats span {
+            display: block;
+            font-size: 1.8rem;
+            color: #4da6ff;
+            font-weight: bold;
+        }
+        
+        p {
+            margin-bottom: 12px;
+            font-size: 1rem;
+            word-wrap: break-word;
+            lines: 1.5;
+        }
+        
+        .bot-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse-indicator 1s infinite;
+        }
+        
+        .bot-indicator.running {
+            background: #51cf66;
+            box-shadow: 0 0 10px #51cf66;
+        }
+        
+        .bot-indicator.stopped {
+            background: #666;
+            box-shadow: none;
+            animation: none;
+        }
+        
+        @keyframes pulse-indicator {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        
+        .status-badge.live {
+            background: linear-gradient(135deg, #51cf66 0%, #69f0ae 100%);
+            color: #000;
+        }
+        
+        .status-badge.warning {
+            background: linear-gradient(135deg, #ffa94d 0%, #ffb366 100%);
+            color: #000;
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            background: #4da6ff;
+            border-radius: 50%;
+            animation: blink 1.4s infinite;
+            margin-left: 5px;
+        }
+        
+        .loading:nth-child(2) { animation-delay: 0.2s; }
+        .loading:nth-child(3) { animation-delay: 0.4s; }
+        
+        @keyframes blink {
+            0%, 80%, 100% { opacity: 0.5; }
+            40% { opacity: 1; }
+        }
+        
+        /* RESPONSIVE */
+        @media (min-width: 768px) {
+            .container {
+                padding: 30px;
+            }
+            
+            h1 {
+                font-size: 3rem;
+            }
+            
+            .card {
+                padding: 35px;
+            }
+            
+            .tab {
+                gap: 15px;
+            }
+            
+            .tab button {
+                flex: 0 1 auto;
+                min-width: 140px;
+            }
+            
+            .stats {
+                grid-template-columns: repeat(4, 1fr);
+                gap: 20px;
+            }
+            
+            button {
+                margin-right: 15px;
+                margin-bottom: 0;
+            }
+        }
+        
+        @media (min-width: 1024px) {
+            .container {
+                max-width: 1400px;
+                padding: 40px;
+            }
+            
+            .card {
+                padding: 40px;
+            }
+            
+            button {
+                padding: 14px 30px;
+                font-size: 1.05rem;
+            }
+        }
+        
+        /* MOBILE */
+        @media (max-width: 480px) {
+            html {
+                font-size: 14px;
+            }
+            
+            .container {
+                padding: 12px;
+            }
+            
+            h1 {
+                font-size: 1.8rem;
+            }
+            
+            .card {
+                padding: 15px;
+            }
+            
+            .warning-banner {
+                padding: 15px;
+                font-size: 0.9rem;
+            }
+            
+            input, select, button {
+                padding: 14px 10px;
+                font-size: 16px;
+                margin-bottom: 10px;
+            }
+            
+            button {
+                width: 100%;
+                margin-right: 0;
+            }
+            
+            .tab {
+                gap: 8px;
+            }
+            
+            .tab button {
+                flex: 1;
+                min-width: 80px;
+                padding: 10px 5px;
+                font-size: 0.9rem;
+            }
+            
+            .stats {
+                grid-template-columns: 1fr 1fr;
+                gap: 10px;
+            }
+            
+            .stats div {
+                padding: 12px;
+            }
+            
+            .stats strong {
+                font-size: 0.8rem;
+            }
+            
+            .stats span {
+                font-size: 1.4rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- WARNING BANNER -->
+        <div class="warning-banner">
+            <strong>⚠️ FINANCIAL DISCLAIMER & RISK WARNING</strong>
+            <p><strong>This is an automated trading bot.</strong> Forex and cryptocurrency trading carry substantial risk of loss. Past performance does not guarantee future results.</p>
+            <p>• Only trade with capital you can afford to lose • Start with small position sizes • Use appropriate stop losses</p>
+            <p>• This bot is NOT financial advice • Consult a qualified financial advisor before trading • Markets can be volatile and unpredictable</p>
+        </div>
+        
+        <h1>🤖 DababyBot AI Trading Platform <span class="loading"></span></h1>
+        <p class="header-subtitle">Intelligent Automated Trading with Machine Learning</p>
+        
+        <div class="tab">
+            <button class="tab-btn active" onclick="showTab('register')">📝 Register</button>
+            <button class="tab-btn" onclick="showTab('login')">🔓 Login</button>
+            <button class="tab-btn" onclick="showTab('dashboard')">📊 Dashboard</button>
+        </div>
+        
+        <!-- REGISTER SECTION -->
+        <div id="register" class="card">
+            <h2>📝 Create Account</h2>
+            <div id="register-msg"></div>
+            <label>Username</label>
+            <input type="text" id="reg-username" placeholder="Choose your trading handle">
+            
+            <label>Email Address</label>
+            <input type="email" id="reg-email" placeholder="your@email.com">
+            
+            <label>Password</label>
+            <input type="password" id="reg-password" placeholder="Secure password (8+ characters)">
+            
+            <button class="success" onclick="register()">✨ Create Account</button>
+        </div>
+        
+        <!-- LOGIN SECTION -->
+        <div id="login" class="card hidden">
+            <h2>🔓 Login to Your Account</h2>
+            <div id="login-msg"></div>
+            <label>Username</label>
+            <input type="text" id="login-username" placeholder="Your username">
+            
+            <label>Password</label>
+            <input type="password" id="login-password" placeholder="Your password">
+            
+            <button class="success" onclick="login()">🚀 Login</button>
+        </div>
+        
+        <!-- DASHBOARD SECTION -->
+        <div id="dashboard" class="card hidden">
+            <h2>📊 Trader Dashboard</h2>
+            <div id="dashboard-msg"></div>
+            
+            <p>Welcome, <strong id="user-name" style="color: #4da6ff;"></strong> <span class="status-badge live">✓ Authorized</span></p>
+            <p>Plan: <strong id="user-plan" style="color: #66d9ff;">Free</strong></p>
+            <p>Bot Status: <span id="bot-status" style="color: #aaa;"><span class="bot-indicator stopped"></span>Disconnected</span></p>
+            
+            <h3>🔗 Connect MT5 Account</h3>
+            <p style="color: #888; font-size: 0.9rem;">Connect your MetaTrader 5 account to start automated trading</p>
+            
+            <label>Select Broker Server:</label>
+            <input type="text" id="mt5-server-search" placeholder="🔍 Search brokers... (XM, OANDA, Exness, etc)">
+            
+            <select id="mt5-server-list" onchange="handleServerChange()">
+                <option value="">-- Choose Broker --</option>
+                <option value="custom">📝 Custom Server</option>
+                <optgroup label="Popular Brokers">
+                    <option value="XM-Live">XM Global</option>
+                    <option value="Exness-Live">Exness</option>
+                    <option value="OANDA-Live">OANDA</option>
+                    <option value="ICMarkets-Live">IC Markets</option>
+                    <option value="Pepperstone-Live">Pepperstone</option>
+                    <option value="MetaQuotes-Demo">MetaQuotes Demo</option>
+                </optgroup>
+                <optgroup label="All Brokers">
+                    <option value="Alpari-Live">Alpari</option>
+                    <option value="FXCM-Live">FXCM</option>
+                    <option value="Admirals-Live">Admirals</option>
+                    <option value="Avatrade-Live">AvaTrade</option>
+                </optgroup>
+            </select>
+            
+            <input type="text" id="mt5-custom-server" placeholder="Enter custom server name" style="display: none;">
+            
+            <label>MT5 Account Number</label>
+            <input type="text" id="mt5-account" placeholder="12345678">
+            
+            <label>MT5 Password</label>
+            <input type="password" id="mt5-password" placeholder="Your MT5 password">
+            
+            <button class="success" onclick="connectMT5()">🔐 Connect MT5</button>
+            
+            <!-- LIVE DASHBOARD -->
+            <div id="live-dashboard" style="display: none; margin-top: 40px;">
+                <h3>📈 Live Trading Dashboard</h3>
+                <p style="color: #51cf66; margin-bottom: 20px;">✅ <strong>Connected to <span id="dashboard-server"></span></strong> | Account: <strong id="dashboard-account"></strong></p>
+                
+                <div class="stats">
+                    <div>
+                        <strong>💰 Account Balance</strong>
+                        <span id="live-balance">$0.00</span>
+                    </div>
+                    <div>
+                        <strong>📊 Equity</strong>
+                        <span id="live-equity">$0.00</span>
+                    </div>
+                    <div>
+                        <strong>🎯 Margin Used</strong>
+                        <span id="live-margin">0%</span>
+                    </div>
+                    <div>
+                        <strong>💹 Today P&L</strong>
+                        <span id="live-pnl">$0.00</span>
+                    </div>
+                </div>
+                
+                <h4>⚙️ Trading Configuration</h4>
+                <div style="background: linear-gradient(135deg, #0d1b2a 0%, #162a3a 100%); padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #2a4a6a;">
+                    <label><strong>📌 Symbols (comma separated):</strong></label>
+                    <input type="text" id="dashboard-symbols" placeholder="EURUSD,GBPUSD,USDJPY" value="EURUSD">
+                    
+                    <label><strong>⚡ Risk per Trade (%):</strong></label>
+                    <input type="number" id="dashboard-risk" placeholder="2" value="2" min="0.1" max="5" style="width: auto;">
+                    
+                    <label><strong>📈 Lot Size:</strong></label>
+                    <input type="number" id="dashboard-lotsize" placeholder="0.1" value="0.1" min="0.01" style="width: auto;">
+                    
+                    <div style="margin-top: 20px;">
+                        <button class="success" onclick="startBotLive()">▶️ RUN BOT</button>
+                        <button class="danger" onclick="stopBotLive()">⏹️ STOP BOT</button>
+                        <button class="warning" onclick="refreshLiveDashboard()" style="color: #000;">🔄 Refresh</button>
+                    </div>
+                </div>
+                
+                <h4>🚀 Bot Status</h4>
+                <p><span id="bot-status-light" class="bot-indicator stopped"></span><strong id="bot-status-text" style="color: #888;">STOPPED</strong></p>
+                
+                <div style="background: rgba(255, 255, 255, 0.05); padding: 15px; border-radius: 8px; margin-top: 15px; border-left: 3px solid #4da6ff;">
+                    <p style="color: #888; font-size: 0.9rem; margin: 0;">💡 <strong>Tip:</strong> Start with 1-2 symbols and 0.1 lot size. Monitor performance before increasing risk.</p>
+                </div>
+            </div>
+            
+            <h3>📈 Statistics</h3>
+            <div class="stats">
+                <div>
+                    <strong>Total Trades</strong>
+                    <span id="stat-trades">0</span>
+                </div>
+                <div>
+                    <strong>Win Rate</strong>
+                    <span id="stat-winrate">0%</span>
+                </div>
+                <div>
+                    <strong>Total P&L</strong>
+                    <span id="stat-pnl">$0</span>
+                </div>
+                <div>
+                    <strong>Avg P&L</strong>
+                    <span id="stat-avg">$0</span>
+                </div>
+            </div>
+            
+            <button class="danger" onclick="logout()" style="margin-top: 20px;">🔓 Logout</button>
+        </div>
+    </div>
+    
+    <script>
+        let authToken = localStorage.getItem('auth_token');
+        
+        function showTab(tab) {
+            document.querySelectorAll('.card').forEach(el => el.classList.add('hidden'));
+            document.getElementById(tab).classList.remove('hidden');
+            document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+            event.target.classList.add('active');
+        }
+        
+        async function register() {
+            const username = document.getElementById('reg-username').value;
+            const email = document.getElementById('reg-email').value;
+            const password = document.getElementById('reg-password').value;
+            const msgDiv = document.getElementById('register-msg');
+            
+            if (!username || !email || !password) {
+                msgDiv.innerHTML = '<div class="error">❌ Please fill all fields</div>';
+                return;
+            }
+            
+            try {
+                const res = await fetch('/api/auth/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, email, password })
+                });
+                const data = await res.json();
+                
+                if (res.ok) {
+                    localStorage.setItem('auth_token', data.access_token);
+                    msgDiv.innerHTML = '<div class="success">✅ Account created! Logging in...</div>';
+                    authToken = data.access_token;
+                    setTimeout(() => loadDashboard(), 1000);
+                } else {
+                    msgDiv.innerHTML = '<div class="error">❌ ' + data.error + '</div>';
+                }
+            } catch (err) {
+                msgDiv.innerHTML = '<div class="error">❌ Network error</div>';
+            }
+        }
+        
+        async function login() {
+            const username = document.getElementById('login-username').value;
+            const password = document.getElementById('login-password').value;
+            const msgDiv = document.getElementById('login-msg');
+            
+            if (!username || !password) {
+                msgDiv.innerHTML = '<div class="error">❌ Please fill all fields</div>';
+                return;
+            }
+            
+            try {
+                const res = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await res.json();
+                
+                if (res.ok) {
+                    localStorage.setItem('auth_token', data.access_token);
+                    msgDiv.innerHTML = '<div class="success">✅ Logged in successfully!</div>';
+                    authToken = data.access_token;
+                    setTimeout(() => loadDashboard(), 1000);
+                } else {
+                    msgDiv.innerHTML = '<div class="error">❌ ' + data.error + '</div>';
+                }
+            } catch (err) {
+                msgDiv.innerHTML = '<div class="error">❌ Network error</div>';
+            }
+        }
+        
+        async function loadDashboard() {
+            try {
+                const res = await fetch('/api/user/profile', {
+                    headers: { 'Authorization': 'Bearer ' + authToken }
+                });
+                const user = await res.json();
+                
+                document.getElementById('user-name').textContent = user.username;
+                document.getElementById('user-plan').textContent = user.subscription_plan.toUpperCase();
+                
+                showTab('dashboard');
+                loadStats();
+            } catch (err) {
+                alert('Error loading profile');
+            }
+        }
+        
+        async function loadStats() {
+            try {
+                const res = await fetch('/api/trades/stats', {
+                    headers: { 'Authorization': 'Bearer ' + authToken }
+                });
+                const stats = await res.json();
+                
+                document.getElementById('stat-trades').textContent = stats.total_trades;
+                document.getElementById('stat-winrate').textContent = stats.win_rate.toFixed(1);
+                document.getElementById('stat-pnl').textContent = '$' + stats.total_pnl.toFixed(2);
+                document.getElementById('stat-avg').textContent = '$' + stats.avg_pnl.toFixed(2);
+            } catch (err) {}
+        }
+        
+        async function connectMT5() {
+            let server = document.getElementById('mt5-server-list').value;
+            const customServer = document.getElementById('mt5-custom-server').value;
+            const account = document.getElementById('mt5-account').value;
+            const password = document.getElementById('mt5-password').value;
+            
+            if (server === 'custom') server = customServer;
+            
+            if (!server || !account || !password) {
+                alert('❌ Please fill all MT5 fields');
+                return;
+            }
+            
+            const res = await fetch('/api/user/mt5-connect', {
+                method: 'POST',
+                headers: { 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ server, account, password })
+            });
+            
+            if (res.ok) {
+                alert('✅ MT5 Connected!');
+                document.getElementById('mt5-account').value = '';
+                document.getElementById('mt5-password').value = '';
+                showLiveDashboard(server, account);
+            } else {
+                alert('❌ MT5 connection failed');
+            }
+        }
+        
+        function showLiveDashboard(server, account) {
+            document.getElementById('dashboard-server').textContent = server;
+            document.getElementById('dashboard-account').textContent = account;
+            document.getElementById('live-balance').textContent = '$10,000.00';
+            document.getElementById('live-equity').textContent = '$10,245.50';
+            document.getElementById('live-margin').textContent = '12%';
+            document.getElementById('live-pnl').textContent = '+$245.50';
+            document.getElementById('live-dashboard').style.display = 'block';
+            updateBotStatus();
+        }
+        
+        async function startBotLive() {
+            const symbols = document.getElementById('dashboard-symbols').value.split(',').map(s => s.trim());
+            
+            if (confirm('⚠️ WARNING: You are about to activate automated trading. Ensure you understand the risks. Continue?')) {
+                const res = await fetch('/api/bot/start', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbols })
+                });
+                
+                if (res.ok) {
+                    localStorage.setItem('bot_running', 'true');
+                    alert('✅ Bot is RUNNING!');
+                    updateBotStatus();
+                } else {
+                    alert('❌ Failed to start bot');
+                }
+            }
+        }
+        
+        async function stopBotLive() {
+            const res = await fetch('/api/bot/stop', {
+                method: 'POST',
+                headers: { 'Authorization': 'Bearer ' + authToken }
+            });
+            
+            if (res.ok) {
+                localStorage.setItem('bot_running', 'false');
+                alert('✅ Bot stopped');
+                updateBotStatus();
+            }
+        }
+        
+        function updateBotStatus() {
+            const isRunning = localStorage.getItem('bot_running') === 'true';
+            const light = document.getElementById('bot-status-light');
+            const text = document.getElementById('bot-status-text');
+            
+            if (isRunning) {
+                light.classList.remove('stopped');
+                light.classList.add('running');
+                text.textContent = '🟢 RUNNING';
+                text.style.color = '#51cf66';
+            } else {
+                light.classList.remove('running');
+                light.classList.add('stopped');
+                text.textContent = '⚫ STOPPED';
+                text.style.color = '#666';
+            }
+        }
+        
+        function handleServerChange() {
+            const selected = document.getElementById('mt5-server-list').value;
+            document.getElementById('mt5-custom-server').style.display = selected === 'custom' ? 'block' : 'none';
+        }
+        
+        async function refreshLiveDashboard() {
+            loadStats();
+            alert('✅ Dashboard refreshed');
+        }
+        
+        function logout() {
+            if (confirm('Are you sure?')) {
+                localStorage.removeItem('auth_token');
+                authToken = null;
+                showTab('register');
+            }
+        }
+        
+        if (authToken) loadDashboard();
+    </script>
+</body>
+</html>

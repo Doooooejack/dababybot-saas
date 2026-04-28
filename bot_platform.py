@@ -666,14 +666,25 @@ def health():
 
 @app.route('/', methods=['GET'])
 def dashboard():
-    """Serve the trader dashboard"""
+    """Serve the enhanced trader dashboard with AI/ML theme and financial warnings"""
+    try:
+        # Try to read enhanced dashboard from file
+        dashboard_path = os.path.join(os.path.dirname(__file__), 'dashboard_enhanced.html')
+        if os.path.exists(dashboard_path):
+            with open(dashboard_path, 'r', encoding='utf-8') as f:
+                html_template = f.read()
+            return render_template_string(html_template)
+    except Exception as e:
+        logger.error(f"Failed to load enhanced dashboard: {e}")
+    
+    # Fallback to basic template (keeps old template as backup)
     html_template = '''
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
-        <title>DababyBot SaaS Platform</title>
+        <title>DababyBot Trading Platform 🤖</title>
         <style>
             * { 
                 margin: 0; 
