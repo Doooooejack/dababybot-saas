@@ -25,12 +25,14 @@ except ImportError:
     MT5_AVAILABLE = False
     logging.warning("MetaTrader5 library not available - demo mode")
 
-# Bot functions not needed on Render (too many local dependencies)
-# Will be disabled in cloud environment
-BOT_AVAILABLE = False
-def run_live_trading_loop():
-    """Stub function - bot disabled on Render"""
-    pass
+# Try to import bot trading functions
+try:
+    from botMayl999990000th import run_live_trading_loop
+    BOT_AVAILABLE = True
+    logging.info("Bot trading functions imported successfully")
+except (ImportError, Exception) as e:
+    BOT_AVAILABLE = False
+    logging.warning(f"Bot module not available (demo mode): {e}")
 
 # ============ SETUP ============
 app = Flask(__name__)
