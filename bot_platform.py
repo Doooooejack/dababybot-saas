@@ -1,6 +1,6 @@
 """
-DababyBot SaaS Platform - Multi-User Backend
-Handles user authentication, separate bot instances, and API endpoints
+DababyBot SaaS Platform - Multi-User Backend with MT5 Trading
+Handles user authentication, MT5 connections, bot execution, and trading
 """
 
 from flask import Flask, request, jsonify, render_template_string
@@ -16,6 +16,23 @@ import uuid
 from datetime import datetime, timedelta
 from functools import wraps
 import logging
+
+# Try to import MT5 (will work on Windows with MetaTrader5 installed)
+try:
+    import MetaTrader5 as mt5
+    MT5_AVAILABLE = True
+except ImportError:
+    MT5_AVAILABLE = False
+    logging.warning("MetaTrader5 library not available - demo mode")
+
+# Try to import bot trading functions
+try:
+    from botMayl999990000th import run_live_trading_loop
+    BOT_AVAILABLE = True
+    logging.info("Bot trading functions imported successfully")
+except ImportError as e:
+    BOT_AVAILABLE = False
+    logging.warning(f"Bot module not available: {e}")
 
 # ============ SETUP ============
 app = Flask(__name__)
@@ -39,6 +56,9 @@ jwt = JWTManager(app)
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Global dictionary to track bot threads per user
+bot_threads = {}  # {user_id: {'thread': Thread, 'stop_event': Event}}
 
 # ============ DATABASE MODELS ============
 
@@ -70,6 +90,11 @@ class User(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime)
     is_admin = db.Column(db.Boolean, default=False)
+    
+    # Localization
+    timezone = db.Column(db.String(50), default='UTC')  # tz database name
+    currency = db.Column(db.String(10), default='USD')  # USD, EUR, GBP, JPY, etc.
+    language = db.Column(db.String(10), default='en')  # en, es, fr, de, ja, etc.
     
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -139,6 +164,48 @@ class BotInstance(db.Model):
             'started_at': self.started_at.isoformat(),
             'pid': self.pid,
         }
+
+
+# ============ BOT HELPER FUNCTIONS ============
+
+def _run_bot_with_stop(user_id, account, server, password, stop_event):
+    """
+    Run the trading bot in a background thread with ability to stop.
+    """
+    try:
+        logger.info(f"[BOT] Starting trading loop for user {user_id}")
+        
+        # Attach stop event to the function so it can check for stop requests
+        run_live_trading_loop._stop_event = stop_event
+        
+        # Run the bot trading loop
+        if BOT_AVAILABLE:
+            run_live_trading_loop()
+        else:
+            # Demo mode - just sleep
+            for i in range(3600):  # Run for 1 hour in demo
+                if stop_event.is_set():
+                    break
+                import time
+                time.sleep(1)
+        
+        logger.info(f"[BOT] Trading loop completed for user {user_id}")
+        
+    except KeyboardInterrupt:
+        logger.info(f"[BOT] Trading loop interrupted for user {user_id}")
+    except Exception as e:
+        logger.error(f"[BOT] Error in trading loop for user {user_id}: {str(e)}")
+    finally:
+        # Cleanup
+        if user_id in bot_threads:
+            del bot_threads[user_id]
+        
+        user = User.query.get(user_id)
+        if user:
+            user.bot_running = False
+            db.session.commit()
+        
+        logger.info(f"[BOT] Bot thread cleanup complete for user {user_id}")
 
 
 # ============ AUTHENTICATION ROUTES ============
@@ -263,12 +330,94 @@ def set_symbols():
     return jsonify({'message': 'Symbols updated', 'symbols': symbols}), 200
 
 
+@app.route('/api/user/preferences', methods=['POST'])
+@jwt_required()
+def update_preferences():
+    """Update user timezone, currency, and language preferences"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    data = request.get_json()
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    if 'timezone' in data:
+        user.timezone = data.get('timezone', 'UTC')
+    if 'currency' in data:
+        user.currency = data.get('currency', 'USD')
+    if 'language' in data:
+        user.language = data.get('language', 'en')
+    
+    db.session.commit()
+    
+    return jsonify({
+        'message': 'Preferences updated',
+        'timezone': user.timezone,
+        'currency': user.currency,
+        'language': user.language
+    }), 200
+
+
+@app.route('/api/timezones', methods=['GET'])
+def get_timezones():
+    """Get list of available timezones"""
+    timezones = [
+        # UTC & Variants
+        'UTC', 'UTC-1', 'UTC-2', 'UTC-3', 'UTC-4', 'UTC-5', 'UTC-6', 'UTC-7', 'UTC-8', 'UTC-9', 'UTC-10', 'UTC-11', 'UTC-12',
+        'UTC+1', 'UTC+2', 'UTC+3', 'UTC+4', 'UTC+5', 'UTC+6', 'UTC+7', 'UTC+8', 'UTC+9', 'UTC+10', 'UTC+11', 'UTC+12', 'UTC+13',
+        # Americas
+        'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles', 'America/Anchorage', 'Pacific/Honolulu',
+        'America/Toronto', 'America/Mexico_City', 'America/Bogota', 'America/Lima', 'America/Sao_Paulo', 'America/Buenos_Aires',
+        # Europe
+        'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Istanbul', 'Europe/Moscow', 'Europe/Athens', 'Europe/Dublin',
+        'Europe/Zurich', 'Europe/Amsterdam', 'Europe/Brussels', 'Europe/Vienna', 'Europe/Prague', 'Europe/Warsaw', 'Europe/Stockholm',
+        # Middle East & Africa
+        'Asia/Dubai', 'Asia/Singapore', 'Asia/Hong_Kong', 'Asia/Tokyo', 'Asia/Shanghai', 'Asia/Bangkok', 'Asia/Kolkata',
+        'Africa/Cairo', 'Africa/Johannesburg', 'Africa/Lagos', 'Africa/Nairobi',
+        # Asia-Pacific
+        'Australia/Sydney', 'Australia/Melbourne', 'Australia/Brisbane', 'New_Zealand', 'Pacific/Auckland', 'Pacific/Fiji'
+    ]
+    return jsonify({'timezones': sorted(timezones)}), 200
+
+
+@app.route('/api/currencies', methods=['GET'])
+def get_currencies():
+    """Get list of available currencies"""
+    currencies = [
+        'USD', 'EUR', 'GBP', 'JPY', 'CHF', 'CAD', 'AUD', 'NZD', 'CNY', 'INR', 'MXN', 'BRL', 'ZAR', 
+        'SGD', 'HKD', 'KRW', 'RUB', 'AED', 'SAR', 'TRY', 'SEK', 'NOK', 'DKK', 'PLN', 'CZK'
+    ]
+    return jsonify({'currencies': sorted(currencies)}), 200
+
+
+@app.route('/api/languages', methods=['GET'])
+def get_languages():
+    """Get list of available languages"""
+    languages = {
+        'en': 'English',
+        'es': 'Español',
+        'fr': 'Français',
+        'de': 'Deutsch',
+        'it': 'Italiano',
+        'pt': 'Português',
+        'ru': 'Русский',
+        'ja': '日本語',
+        'ko': '한국어',
+        'zh': '中文',
+        'ar': 'العربية',
+        'hi': 'हिन्दी',
+        'th': 'ไทย',
+        'tr': 'Türkçe',
+    }
+    return jsonify({'languages': languages}), 200
+
+
 # ============ BOT CONTROL ROUTES ============
 
 @app.route('/api/bot/start', methods=['POST'])
 @jwt_required()
 def start_bot():
-    """Start trading bot for user"""
+    """Start trading bot for user in background thread"""
     user_id = get_jwt_identity()
     user = User.query.get(user_id)
     
@@ -281,20 +430,59 @@ def start_bot():
     if not user.mt5_account:
         return jsonify({'error': 'MT5 credentials not configured'}), 400
     
-    # TODO: Spawn bot instance for this user
-    # For now, just mark as running
-    user.bot_running = True
-    
-    instance = BotInstance(
-        user_id=user.id,
-        status='RUNNING'
-    )
-    db.session.add(instance)
-    db.session.commit()
-    
-    logger.info(f"Bot started for user {user.username}")
-    
-    return jsonify({'message': 'Bot started', 'instance': instance.to_dict()}), 200
+    try:
+        # Verify MT5 connection first (if available)
+        if MT5_AVAILABLE:
+            if not mt5.initialize(login=int(user.mt5_account), server=user.mt5_server, password=user.mt5_password):
+                mt5.shutdown()
+                return jsonify({'error': f'MT5 connection failed: {mt5.last_error()}'}), 400
+            
+            # Get account info
+            account_info = mt5.account_info()
+            if account_info is None:
+                mt5.shutdown()
+                return jsonify({'error': 'Could not get account info'}), 400
+            
+            logger.info(f"MT5 verified for user {user.username}: Balance=${account_info.balance}")
+            mt5.shutdown()  # Close for now, bot will open its own connection
+        
+        # Create stop event for this bot
+        stop_event = threading.Event()
+        
+        # Start bot in background thread
+        bot_thread = threading.Thread(
+            target=_run_bot_with_stop,
+            args=(user_id, user.mt5_account, user.mt5_server, user.mt5_password, stop_event),
+            daemon=True,
+            name=f"BotThread-{user.username}"
+        )
+        bot_thread.start()
+        
+        # Store thread reference
+        bot_threads[user_id] = {'thread': bot_thread, 'stop_event': stop_event}
+        
+        # Mark bot as running
+        user.bot_running = True
+        
+        instance = BotInstance(
+            user_id=user.id,
+            status='RUNNING'
+        )
+        db.session.add(instance)
+        db.session.commit()
+        
+        logger.info(f"Bot thread started for user {user.username} ({user_id})")
+        
+        return jsonify({
+            'message': 'Bot started successfully',
+            'instance': instance.to_dict(),
+            'bot_available': BOT_AVAILABLE
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error starting bot: {str(e)}")
+        return jsonify({'error': f'Bot startup failed: {str(e)}'}), 500
+
 
 
 @app.route('/api/bot/stop', methods=['POST'])
@@ -310,12 +498,35 @@ def stop_bot():
     if not user.bot_running:
         return jsonify({'error': 'Bot not running'}), 400
     
-    user.bot_running = False
-    db.session.commit()
-    
-    logger.info(f"Bot stopped for user {user.username}")
-    
-    return jsonify({'message': 'Bot stopped'}), 200
+    try:
+        # Stop the bot thread if it exists
+        if user_id in bot_threads:
+            bot_info = bot_threads[user_id]
+            stop_event = bot_info['stop_event']
+            stop_event.set()  # Signal the thread to stop
+            
+            # Wait briefly for thread to finish
+            if bot_info['thread'].is_alive():
+                bot_info['thread'].join(timeout=5)
+            
+            logger.info(f"Bot thread stopped for user {user.username}")
+        
+        user.bot_running = False
+        
+        # Mark instance as stopped
+        instance = BotInstance.query.filter_by(user_id=user.id, status='RUNNING').first()
+        if instance:
+            instance.status = 'STOPPED'
+            instance.stopped_at = datetime.utcnow()
+        
+        db.session.commit()
+        logger.info(f"Bot stopped for user {user.username}")
+        
+        return jsonify({'message': 'Bot stopped successfully'}), 200
+        
+    except Exception as e:
+        logger.error(f"Error stopping bot: {str(e)}")
+        return jsonify({'error': f'Bot stop failed: {str(e)}'}), 500
 
 
 @app.route('/api/bot/status', methods=['GET'])
@@ -449,6 +660,1020 @@ def update_subscription(user_id):
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok'}), 200
+
+
+# ============ FRONTEND ROUTES ============
+
+@app.route('/', methods=['GET'])
+def dashboard():
+    """Serve the trader dashboard"""
+    html_template = '''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+        <title>DababyBot SaaS Platform</title>
+        <style>
+            * { 
+                margin: 0; 
+                padding: 0; 
+                box-sizing: border-box; 
+            }
+            
+            html { 
+                font-size: 16px; 
+            }
+            
+            body { 
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; 
+                background: #0a1628; 
+                color: #fff;
+                line-height: 1.6;
+            }
+            
+            .container { 
+                max-width: 1200px; 
+                margin: 0 auto; 
+                padding: 15px; 
+                min-height: 100vh;
+            }
+            
+            .card { 
+                background: #1a2a3a; 
+                border-radius: 8px; 
+                padding: 20px; 
+                margin-bottom: 20px; 
+                border: 1px solid #2a3a4a; 
+            }
+            
+            h1 { 
+                margin-bottom: 20px; 
+                color: #4da6ff; 
+                font-size: 1.75rem;
+                word-wrap: break-word;
+            }
+            
+            h2 { 
+                margin-bottom: 15px; 
+                margin-top: 15px; 
+                font-size: 1.25rem;
+            }
+            
+            h3 { 
+                margin-bottom: 12px; 
+                margin-top: 12px; 
+                font-size: 1.1rem;
+            }
+            
+            label { 
+                display: block; 
+                margin-bottom: 8px; 
+                font-weight: 500;
+            }
+            
+            input, select { 
+                width: 100%; 
+                padding: 12px; 
+                margin-bottom: 15px; 
+                background: #0d1b2a; 
+                border: 1px solid #2a3a4a; 
+                color: #fff; 
+                border-radius: 4px; 
+                font-size: 1rem;
+                font-family: inherit;
+                -webkit-appearance: none;
+                appearance: none;
+            }
+            
+            input:focus, select:focus { 
+                outline: none;
+                border-color: #4da6ff;
+                background: #0d1b2a;
+            }
+            
+            select {
+                cursor: pointer;
+                background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%234da6ff' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+                background-repeat: no-repeat;
+                background-position: right 10px center;
+                padding-right: 35px;
+            }
+            
+            button { 
+                background: #4da6ff; 
+                color: #000; 
+                padding: 12px 20px; 
+                border: none; 
+                border-radius: 4px; 
+                cursor: pointer; 
+                font-weight: bold; 
+                margin-right: 10px;
+                margin-bottom: 10px;
+                font-size: 1rem;
+                transition: background 0.2s ease;
+                -webkit-appearance: none;
+                appearance: none;
+                min-height: 44px;
+            }
+            
+            button:hover { 
+                background: #66b3ff; 
+            }
+            
+            button:active {
+                background: #3d94e0;
+            }
+            
+            .error { 
+                color: #ff6b6b; 
+                margin-bottom: 15px; 
+                padding: 10px;
+                background: rgba(255, 107, 107, 0.1);
+                border-radius: 4px;
+            }
+            
+            .success { 
+                color: #51cf66; 
+                margin-bottom: 15px; 
+                padding: 10px;
+                background: rgba(81, 207, 102, 0.1);
+                border-radius: 4px;
+            }
+            
+            .hidden { 
+                display: none !important; 
+            }
+            
+            .tab { 
+                margin-bottom: 20px; 
+                display: flex;
+                flex-wrap: wrap;
+                gap: 10px;
+            }
+            
+            .tab button { 
+                background: #2a3a4a; 
+                color: #fff; 
+                margin-bottom: 0;
+                margin-right: 0;
+                flex: 1;
+                min-width: 100px;
+            }
+            
+            .tab button.active { 
+                background: #4da6ff; 
+                color: #000; 
+            }
+            
+            .stats { 
+                display: grid; 
+                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); 
+                gap: 15px;
+                margin-bottom: 20px;
+            }
+            
+            .stats div {
+                background: #0d1b2a;
+                padding: 15px;
+                border-radius: 6px;
+                border: 1px solid #2a3a4a;
+            }
+            
+            .stats strong {
+                display: block;
+                margin-bottom: 8px;
+                font-size: 0.9rem;
+                color: #aaa;
+            }
+            
+            .stats span {
+                display: block;
+                font-size: 1.4rem;
+                color: #4da6ff;
+                font-weight: bold;
+            }
+            
+            p {
+                margin-bottom: 10px;
+                font-size: 1rem;
+                word-wrap: break-word;
+            }
+            
+            /* Tablet & iPad (768px and up) */
+            @media (min-width: 768px) {
+                .container {
+                    padding: 20px;
+                    margin-top: 20px;
+                }
+                
+                h1 {
+                    font-size: 2.25rem;
+                    margin-bottom: 30px;
+                }
+                
+                .card {
+                    padding: 30px;
+                }
+                
+                .tab {
+                    gap: 15px;
+                }
+                
+                .tab button {
+                    flex: 0 1 auto;
+                    min-width: 120px;
+                }
+                
+                .stats {
+                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                    gap: 20px;
+                }
+                
+                button {
+                    margin-right: 15px;
+                    margin-bottom: 0;
+                }
+            }
+            
+            /* Desktop (1024px and up) */
+            @media (min-width: 1024px) {
+                .container {
+                    max-width: 1200px;
+                    padding: 30px;
+                }
+                
+                .card {
+                    padding: 40px;
+                }
+                
+                button {
+                    padding: 12px 30px;
+                    font-size: 1.05rem;
+                }
+                
+                .stats {
+                    grid-template-columns: repeat(4, 1fr);
+                }
+            }
+            
+            /* Large screens (1440px and up) */
+            @media (min-width: 1440px) {
+                h1 {
+                    font-size: 2.5rem;
+                }
+                
+                .card {
+                    padding: 50px;
+                }
+            }
+            
+            /* Small phones (320px and up) */
+            @media (max-width: 480px) {
+                html {
+                    font-size: 14px;
+                }
+                
+                .container {
+                    padding: 10px;
+                    margin-top: 0;
+                }
+                
+                h1 {
+                    font-size: 1.5rem;
+                    margin-bottom: 15px;
+                }
+                
+                h2 {
+                    font-size: 1.1rem;
+                }
+                
+                h3 {
+                    font-size: 1rem;
+                }
+                
+                .card {
+                    padding: 15px;
+                    margin-bottom: 15px;
+                }
+                
+                input, select, input[type="text"], input[type="password"] {
+                    padding: 14px 10px;
+                    font-size: 16px;
+                    margin-bottom: 12px;
+                }
+                
+                button {
+                    width: 100%;
+                    padding: 14px;
+                    margin-right: 0;
+                    margin-bottom: 10px;
+                    font-size: 1rem;
+                    min-height: 48px;
+                }
+                
+                .tab {
+                    gap: 8px;
+                    margin-bottom: 15px;
+                }
+                
+                .tab button {
+                    flex: 1;
+                    min-width: 80px;
+                    padding: 10px 5px;
+                    font-size: 0.9rem;
+                }
+                
+                .stats {
+                    grid-template-columns: 1fr;
+                    gap: 10px;
+                    margin-bottom: 15px;
+                }
+                
+                .card p {
+                    font-size: 0.95rem;
+                    word-break: break-word;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🤖 DababyBot SaaS Trading Platform</h1>
+            
+            <div class="tab">
+                <button class="tab-btn active" onclick="showTab('register')">Register</button>
+                <button class="tab-btn" onclick="showTab('login')">Login</button>
+                <button class="tab-btn" onclick="showTab('dashboard')">Dashboard</button>
+            </div>
+            
+            <!-- REGISTER SECTION -->
+            <div id="register" class="card">
+                <h2>Create Account</h2>
+                <div id="register-msg"></div>
+                <input type="text" id="reg-username" placeholder="Username">
+                <input type="email" id="reg-email" placeholder="Email">
+                <input type="password" id="reg-password" placeholder="Password">
+                <button onclick="register()">Register</button>
+            </div>
+            
+            <!-- LOGIN SECTION -->
+            <div id="login" class="card hidden">
+                <h2>Login</h2>
+                <div id="login-msg"></div>
+                <input type="text" id="login-username" placeholder="Username">
+                <input type="password" id="login-password" placeholder="Password">
+                <button onclick="login()">Login</button>
+            </div>
+            
+            <!-- DASHBOARD SECTION (Hidden until logged in) -->
+            <div id="dashboard" class="card hidden">
+                <h2>Trader Dashboard</h2>
+                <div id="dashboard-msg"></div>
+                <p>Welcome, <strong id="user-name"></strong></p>
+                <p>Plan: <strong id="user-plan">Free</strong></p>
+                <p>Bot Status: <strong id="bot-status">Stopped</strong></p>
+                
+                <h3>MT5 Connection</h3>
+                <label>Select Server:</label>
+                <input type="text" id="mt5-server-search" placeholder="Search servers..." onkeyup="filterServers()">
+                <select id="mt5-server-list" style="width: 100%; padding: 10px; margin-bottom: 15px; background: #0d1b2a; border: 1px solid #2a3a4a; color: #fff; border-radius: 4px;" onchange="handleServerChange()">
+                    <option value="">-- Choose Server --</option>
+                    <option value="custom">📝 Enter Custom Server...</option>
+                    <optgroup label="MetaQuotes">
+                        <option value="MetaQuotes-Demo">MetaQuotes-Demo</option>
+                        <option value="MetaQuotes-Live">MetaQuotes-Live</option>
+                    </optgroup>
+                    <optgroup label="IC Markets">
+                        <option value="ICMarkets-Demo">ICMarkets-Demo</option>
+                        <option value="ICMarkets-Live">ICMarkets-Live</option>
+                    </optgroup>
+                    <optgroup label="XM (Tradexfx)">
+                        <option value="XM-Demo">XM-Demo</option>
+                        <option value="XM-Live">XM-Live</option>
+                        <option value="XMGlobal-Demo">XMGlobal-Demo</option>
+                        <option value="XMGlobal-Live">XMGlobal-Live</option>
+                    </optgroup>
+                    <optgroup label="Alpari">
+                        <option value="Alpari-Demo">Alpari-Demo</option>
+                        <option value="Alpari-Live">Alpari-Live</option>
+                    </optgroup>
+                    <optgroup label="Pepperstone">
+                        <option value="Pepperstone-Demo">Pepperstone-Demo</option>
+                        <option value="Pepperstone-Live">Pepperstone-Live</option>
+                    </optgroup>
+                    <optgroup label="FXCM">
+                        <option value="FXCM-Demo">FXCM-Demo</option>
+                        <option value="FXCM-Live">FXCM-Live</option>
+                    </optgroup>
+                    <optgroup label="OANDA">
+                        <option value="OANDA-Demo">OANDA-Demo</option>
+                        <option value="OANDA-Live">OANDA-Live</option>
+                    </optgroup>
+                    <optgroup label="IG">
+                        <option value="IG-Demo">IG-Demo</option>
+                        <option value="IG-Live">IG-Live</option>
+                    </optgroup>
+                    <optgroup label="Saxo Bank">
+                        <option value="SaxoBank-Demo">SaxoBank-Demo</option>
+                        <option value="SaxoBank-Live">SaxoBank-Live</option>
+                    </optgroup>
+                    <optgroup label="eToro">
+                        <option value="eToro-Demo">eToro-Demo</option>
+                        <option value="eToro-Live">eToro-Live</option>
+                    </optgroup>
+                    <optgroup label="Forex.com">
+                        <option value="Forexcom-Demo">Forexcom-Demo</option>
+                        <option value="Forexcom-Live">Forexcom-Live</option>
+                    </optgroup>
+                    <optgroup label="Admirals">
+                        <option value="Admirals-Demo">Admirals-Demo</option>
+                        <option value="Admirals-Live">Admirals-Live</option>
+                    </optgroup>
+                    <optgroup label="Exness">
+                        <option value="Exness-Demo">Exness-Demo</option>
+                        <option value="Exness-Live">Exness-Live</option>
+                    </optgroup>
+                    <optgroup label="Avatrade">
+                        <option value="Avatrade-Demo">Avatrade-Demo</option>
+                        <option value="Avatrade-Live">Avatrade-Live</option>
+                    </optgroup>
+                    <optgroup label="FP Markets">
+                        <option value="FPMarkets-Demo">FPMarkets-Demo</option>
+                        <option value="FPMarkets-Live">FPMarkets-Live</option>
+                    </optgroup>
+                    <optgroup label="HotForex">
+                        <option value="HotForex-Demo">HotForex-Demo</option>
+                        <option value="HotForex-Live">HotForex-Live</option>
+                    </optgroup>
+                    <optgroup label="TMGM">
+                        <option value="TMGM-Demo">TMGM-Demo</option>
+                        <option value="TMGM-Live">TMGM-Live</option>
+                    </optgroup>
+                    <optgroup label="FXPro">
+                        <option value="FXPro-Demo">FXPro-Demo</option>
+                        <option value="FXPro-Live">FXPro-Live</option>
+                    </optgroup>
+                    <optgroup label="MultiBank">
+                        <option value="MultiBank-Demo">MultiBank-Demo</option>
+                        <option value="MultiBank-Live">MultiBank-Live</option>
+                    </optgroup>
+                    <optgroup label="Tickmill">
+                        <option value="Tickmill-Demo">Tickmill-Demo</option>
+                        <option value="Tickmill-Live">Tickmill-Live</option>
+                    </optgroup>
+                    <optgroup label="FXTM">
+                        <option value="FXTM-Demo">FXTM-Demo</option>
+                        <option value="FXTM-Live">FXTM-Live</option>
+                    </optgroup>
+                    <optgroup label="RoboForex">
+                        <option value="RoboForex-Demo">RoboForex-Demo</option>
+                        <option value="RoboForex-Live">RoboForex-Live</option>
+                    </optgroup>
+                    <optgroup label="FXDD">
+                        <option value="FXDD-Demo">FXDD-Demo</option>
+                        <option value="FXDD-Live">FXDD-Live</option>
+                    </optgroup>
+                    <optgroup label="PaxForex">
+                        <option value="PaxForex-Demo">PaxForex-Demo</option>
+                        <option value="PaxForex-Live">PaxForex-Live</option>
+                    </optgroup>
+                    <optgroup label="JustMarkets">
+                        <option value="JustMarkets-Demo">JustMarkets-Demo</option>
+                        <option value="JustMarkets-Live">JustMarkets-Live</option>
+                    </optgroup>
+                    <optgroup label="OATFundedNext">
+                        <option value="OATFundedNext-Demo">OATFundedNext-Demo</option>
+                        <option value="OATFundedNext-Live">OATFundedNext-Live</option>
+                        <option value="OATFundedNext-Stage1">OATFundedNext-Stage1</option>
+                        <option value="OATFundedNext-Stage2">OATFundedNext-Stage2</option>
+                    </optgroup>
+                    <optgroup label="RCG Markets">
+                        <option value="RCGMarkets-Demo">RCGMarkets-Demo</option>
+                        <option value="RCGMarkets-Live">RCGMarkets-Live</option>
+                    </optgroup>
+                    <optgroup label="FTMO">
+                        <option value="FTMO-Demo">FTMO-Demo</option>
+                        <option value="FTMO-Live">FTMO-Live</option>
+                    </optgroup>
+                    <optgroup label="TopStep">
+                        <option value="TopStep-Demo">TopStep-Demo</option>
+                        <option value="TopStep-Live">TopStep-Live</option>
+                    </optgroup>
+                    <optgroup label="Funded">
+                        <option value="Funded-Demo">Funded-Demo</option>
+                        <option value="Funded-Live">Funded-Live</option>
+                    </optgroup>
+                    <optgroup label="The5ers">
+                        <option value="The5ers-Demo">The5ers-Demo</option>
+                        <option value="The5ers-Live">The5ers-Live</option>
+                    </optgroup>
+                    <optgroup label="Blueberry Markets">
+                        <option value="BlueberryMarkets-Demo">BlueberryMarkets-Demo</option>
+                        <option value="BlueberryMarkets-Live">BlueberryMarkets-Live</option>
+                    </optgroup>
+                    <optgroup label="AimTrade">
+                        <option value="AimTrade-Demo">AimTrade-Demo</option>
+                        <option value="AimTrade-Live">AimTrade-Live</option>
+                    </optgroup>
+                </select>
+                <input type="text" id="mt5-custom-server" placeholder="Enter custom server name" style="display: none;">
+                <input type="text" id="mt5-account" placeholder="Account Number">
+                <input type="password" id="mt5-password" placeholder="MT5 Password">
+                <button onclick="connectMT5()">Connect MT5</button>
+                
+                <!-- LIVE TRADING DASHBOARD (Hidden until MT5 connected) -->
+                <div id="live-dashboard" style="display: none; margin-top: 30px;">
+                    <h3>📊 Live Trading Dashboard</h3>
+                    <p style="color: #51cf66; margin-bottom: 15px;">✓ Connected to <strong id="dashboard-server"></strong> | Account: <strong id="dashboard-account"></strong></p>
+                    
+                    <div class="stats">
+                        <div>
+                            <strong>Account Balance:</strong><br>
+                            <span id="live-balance" style="font-size: 1.6rem; color: #51cf66;">$0.00</span>
+                        </div>
+                        <div>
+                            <strong>Equity:</strong><br>
+                            <span id="live-equity" style="font-size: 1.6rem; color: #4da6ff;">$0.00</span>
+                        </div>
+                        <div>
+                            <strong>Margin Used:</strong><br>
+                            <span id="live-margin" style="font-size: 1.6rem; color: #ffa94d;">0%</span>
+                        </div>
+                        <div>
+                            <strong>Today P&L:</strong><br>
+                            <span id="live-pnl" style="font-size: 1.6rem;">$0.00</span>
+                        </div>
+                    </div>
+                    
+                    <h4 style="margin-top: 20px; margin-bottom: 10px;">⚙️ Trading Configuration</h4>
+                    <div style="background: #0d1b2a; padding: 15px; border-radius: 4px; margin-bottom: 15px; border: 1px solid #2a3a4a;">
+                        <label><strong>Symbols to Trade (comma separated):</strong></label>
+                        <input type="text" id="dashboard-symbols" placeholder="EURUSD,GBPUSD,USDJPY" value="EURUSD">
+                        
+                        <label style="margin-top: 10px;"><strong>Risk per Trade (%):</strong></label>
+                        <input type="number" id="dashboard-risk" placeholder="2" value="2" min="0.1" max="10" step="0.1" style="width: 100px;">
+                        
+                        <label style="margin-top: 10px;"><strong>Max Lot Size (per trade):</strong></label>
+                        <input type="number" id="dashboard-lotsize" placeholder="0.1" value="0.1" min="0.01" step="0.01" style="width: 100px;">
+                        
+                        <div style="margin-top: 15px;">
+                            <button onclick="startBotLive()" style="background: #51cf66; color: #000;">▶️ Run Bot</button>
+                            <button onclick="stopBotLive()" style="background: #ff6b6b;">⏹️ Stop Bot</button>
+                            <button onclick="refreshLiveDashboard()" style="background: #4da6ff; color: #000;">🔄 Refresh</button>
+                        </div>
+                    </div>
+                    
+                    <h4 style="margin-bottom: 10px; display: flex; align-items: center;">
+                        <span id="bot-status-light" style="display: inline-block; width: 12px; height: 12px; background: #aaa; border-radius: 50%; margin-right: 10px;"></span>
+                        Bot Status: <span id="bot-status-text" style="color: #aaa; margin-left: 10px;">STOPPED</span>
+                    </h4>
+                    
+                    <h4 style="margin-top: 15px; margin-bottom: 10px;">📈 Open Positions</h4>
+                    <div id="live-positions" style="background: #0d1b2a; padding: 15px; border-radius: 4px; margin-bottom: 15px; border: 1px solid #2a3a4a; min-height: 50px;">
+                        <p style="color: #aaa;">No open positions</p>
+                    </div>
+                    
+                    <h4 style="margin-bottom: 10px;">📝 Recent Trades</h4>
+                    <div id="live-trades" style="background: #0d1b2a; padding: 15px; border-radius: 4px; margin-bottom: 15px; border: 1px solid #2a3a4a; min-height: 50px;">
+                        <p style="color: #aaa;">No trades today</p>
+                    </div>
+                    
+                    <button onclick="disconnectMT5()" style="background: #666; margin-top: 10px;">Disconnect MT5</button>
+                </div>
+                
+                <h3>Trading Symbols</h3>
+                <input type="text" id="symbols" placeholder="EURUSD,GBPUSD,USDJPY" value="EURUSD">
+                <button onclick="setSymbols()">Set Symbols</button>
+                
+                <h3>Bot Control</h3>
+                <button onclick="startBot()">Start Bot</button>
+                <button onclick="stopBot()">Stop Bot</button>
+                
+                <h3>🌍 Global Preferences</h3>
+                <label>Timezone</label>
+                <select id="timezone-select" onchange="updatePreferences()">
+                    <option value="UTC">UTC</option>
+                </select>
+                
+                <label>Currency</label>
+                <select id="currency-select" onchange="updatePreferences()">
+                    <option value="USD">USD - US Dollar</option>
+                </select>
+                
+                <label>Language</label>
+                <select id="language-select" onchange="updatePreferences()">
+                    <option value="en">English</option>
+                    <option value="es">Español</option>
+                    <option value="fr">Français</option>
+                    <option value="de">Deutsch</option>
+                    <option value="pt">Português</option>
+                    <option value="zh">中文</option>
+                    <option value="ja">日本語</option>
+                    <option value="ru">Русский</option>
+                </select>
+                
+                <h3>Statistics</h3>
+                <div class="stats">
+                    <div><strong>Total Trades:</strong> <span id="stat-trades">0</span></div>
+                    <div><strong>Win Rate:</strong> <span id="stat-winrate">0</span>%</div>
+                    <div><strong>Total P&L:</strong> <span id="stat-pnl">0</span></div>
+                    <div><strong>Avg P&L:</strong> <span id="stat-avg">0</span></div>
+                </div>
+                <button onclick="logout()">Logout</button>
+            </div>
+        </div>
+        
+        <script>
+            let authToken = localStorage.getItem('auth_token');
+            
+            function showTab(tab) {
+                document.querySelectorAll('.card').forEach(el => el.classList.add('hidden'));
+                document.getElementById(tab).classList.remove('hidden');
+                document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+                event.target.classList.add('active');
+            }
+            
+            async function register() {
+                const username = document.getElementById('reg-username').value;
+                const email = document.getElementById('reg-email').value;
+                const password = document.getElementById('reg-password').value;
+                const msgDiv = document.getElementById('register-msg');
+                
+                if (!username || !email || !password) {
+                    msgDiv.innerHTML = '<div class="error">Fill all fields</div>';
+                    return;
+                }
+                
+                try {
+                    const res = await fetch('/api/auth/register', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, email, password })
+                    });
+                    const data = await res.json();
+                    
+                    if (res.ok) {
+                        localStorage.setItem('auth_token', data.access_token);
+                        msgDiv.innerHTML = '<div class="success">✓ Registered! Logging in...</div>';
+                        authToken = data.access_token;
+                        setTimeout(() => loadDashboard(), 1000);
+                    } else {
+                        msgDiv.innerHTML = '<div class="error">' + data.error + '</div>';
+                    }
+                } catch (err) {
+                    msgDiv.innerHTML = '<div class="error">Network error</div>';
+                }
+            }
+            
+            async function login() {
+                const username = document.getElementById('login-username').value;
+                const password = document.getElementById('login-password').value;
+                const msgDiv = document.getElementById('login-msg');
+                
+                if (!username || !password) {
+                    msgDiv.innerHTML = '<div class="error">Fill all fields</div>';
+                    return;
+                }
+                
+                try {
+                    const res = await fetch('/api/auth/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password })
+                    });
+                    const data = await res.json();
+                    
+                    if (res.ok) {
+                        localStorage.setItem('auth_token', data.access_token);
+                        msgDiv.innerHTML = '<div class="success">✓ Logged in!</div>';
+                        authToken = data.access_token;
+                        setTimeout(() => loadDashboard(), 1000);
+                    } else {
+                        msgDiv.innerHTML = '<div class="error">' + data.error + '</div>';
+                    }
+                } catch (err) {
+                    msgDiv.innerHTML = '<div class="error">Network error</div>';
+                }
+            }
+            
+            async function loadDashboard() {
+                const msgDiv = document.getElementById('dashboard-msg');
+                try {
+                    const res = await fetch('/api/user/profile', {
+                        headers: { 'Authorization': 'Bearer ' + authToken }
+                    });
+                    const user = await res.json();
+                    
+                    document.getElementById('user-name').textContent = user.username;
+                    document.getElementById('user-plan').textContent = user.subscription_plan;
+                    
+                    // Load preference lists from API
+                    await loadPreferenceLists();
+                    
+                    // Set user's saved preferences
+                    document.getElementById('timezone-select').value = user.timezone || 'UTC';
+                    document.getElementById('currency-select').value = user.currency || 'USD';
+                    document.getElementById('language-select').value = user.language || 'en';
+                    
+                    showTab('dashboard');
+                    loadStats();
+                } catch (err) {
+                    msgDiv.innerHTML = '<div class="error">Failed to load profile</div>';
+                }
+            }
+            
+            async function loadPreferenceLists() {
+                try {
+                    // Load timezones
+                    const tzRes = await fetch('/api/timezones');
+                    const tzData = await tzRes.json();
+                    const tzSelect = document.getElementById('timezone-select');
+                    tzSelect.innerHTML = '';
+                    tzData.timezones.forEach(tz => {
+                        const opt = document.createElement('option');
+                        opt.value = tz;
+                        opt.textContent = tz;
+                        tzSelect.appendChild(opt);
+                    });
+                    
+                    // Load currencies
+                    const currRes = await fetch('/api/currencies');
+                    const currData = await currRes.json();
+                    const currSelect = document.getElementById('currency-select');
+                    currSelect.innerHTML = '';
+                    currData.currencies.forEach(curr => {
+                        const opt = document.createElement('option');
+                        opt.value = curr;
+                        const symbols = { 'USD': '$', 'EUR': '€', 'GBP': '£', 'JPY': '¥', 'CHF': 'CHF', 'CNY': '¥', 'INR': '₹', 'AUD': 'A$', 'CAD': 'C$', 'SGD': 'S$', 'HKD': 'HK$', 'RUB': '₽', 'AED': 'د.إ', 'TRY': '₺', 'ZAR': 'R' };
+                        const symbol = symbols[curr] || '';
+                        opt.textContent = `${curr} ${symbol}`;
+                        currSelect.appendChild(opt);
+                    });
+                } catch (err) {
+                    console.error('Failed to load preference lists:', err);
+                }
+            }
+            
+            async function updatePreferences() {
+                const timezone = document.getElementById('timezone-select').value;
+                const currency = document.getElementById('currency-select').value;
+                const language = document.getElementById('language-select').value;
+                
+                try {
+                    const res = await fetch('/api/user/preferences', {
+                        method: 'POST',
+                        headers: { 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ timezone, currency, language })
+                    });
+                    
+                    if (res.ok) {
+                        const data = await res.json();
+                        console.log('✓ Preferences saved');
+                    }
+                } catch (err) {
+                    console.error('Failed to update preferences:', err);
+                }
+            }
+            
+            async function loadStats() {
+                try {
+                    const res = await fetch('/api/trades/stats', {
+                        headers: { 'Authorization': 'Bearer ' + authToken }
+                    });
+                    const stats = await res.json();
+                    
+                    document.getElementById('stat-trades').textContent = stats.total_trades;
+                    document.getElementById('stat-winrate').textContent = stats.win_rate.toFixed(1);
+                    document.getElementById('stat-pnl').textContent = stats.total_pnl.toFixed(2);
+                    document.getElementById('stat-avg').textContent = stats.avg_pnl.toFixed(2);
+                } catch (err) {}
+            }
+            
+            async function connectMT5() {
+                let server = document.getElementById('mt5-server-list').value;
+                const customServer = document.getElementById('mt5-custom-server').value;
+                const account = document.getElementById('mt5-account').value;
+                const password = document.getElementById('mt5-password').value;
+                
+                // If custom server selected, use that instead
+                if (server === 'custom') {
+                    server = customServer;
+                }
+                
+                if (!server || !account || !password) {
+                    alert('Please fill all MT5 fields');
+                    return;
+                }
+                
+                const res = await fetch('/api/user/mt5-connect', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ server, account, password })
+                });
+                
+                if (res.ok) {
+                    alert('✓ MT5 Connected to: ' + server);
+                    document.getElementById('mt5-account').value = '';
+                    document.getElementById('mt5-password').value = '';
+                    document.getElementById('mt5-custom-server').value = '';
+                    document.getElementById('mt5-server-list').value = '';
+                    
+                    // Show live dashboard
+                    showLiveDashboard(server, account);
+                } else {
+                    alert('Failed to connect MT5');
+                }
+            }
+            
+            function showLiveDashboard(server, account) {
+                const dashboard = document.getElementById('live-dashboard');
+                document.getElementById('dashboard-server').textContent = server;
+                document.getElementById('dashboard-account').textContent = account;
+                
+                // Mock data - replace with real MT5 data when bot connects
+                document.getElementById('live-balance').textContent = '$10,000.00';
+                document.getElementById('live-equity').textContent = '$10,245.50';
+                document.getElementById('live-margin').textContent = '12%';
+                document.getElementById('live-pnl').textContent = '+$245.50';
+                document.getElementById('live-pnl').style.color = '#51cf66';
+                
+                // Update status
+                updateBotStatus();
+                
+                dashboard.style.display = 'block';
+            }
+            
+            async function startBotLive() {
+                const symbols = document.getElementById('dashboard-symbols').value.split(',').map(s => s.trim());
+                const risk = parseFloat(document.getElementById('dashboard-risk').value) || 2;
+                const lotsize = parseFloat(document.getElementById('dashboard-lotsize').value) || 0.1;
+                
+                if (!symbols.length || symbols[0] === '') {
+                    alert('Please enter at least one symbol');
+                    return;
+                }
+                
+                // Save symbols first
+                const symRes = await fetch('/api/user/symbols', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbols })
+                });
+                
+                // Start the bot
+                const botRes = await fetch('/api/bot/start', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbols, risk, lotsize })
+                });
+                
+                if (botRes.ok) {
+                    localStorage.setItem('bot_running', 'true');
+                    console.log('✓ Bot started with symbols:', symbols, 'Risk:', risk, '%', 'Lot Size:', lotsize);
+                    alert('✓ Bot is now running!');
+                    updateBotStatus();
+                } else {
+                    alert('Failed to start bot');
+                }
+            }
+            
+            async function stopBotLive() {
+                const botRes = await fetch('/api/bot/stop', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + authToken }
+                });
+                
+                if (botRes.ok) {
+                    localStorage.setItem('bot_running', 'false');
+                    console.log('✓ Bot stopped');
+                    alert('✓ Bot stopped successfully');
+                    updateBotStatus();
+                } else {
+                    alert('Failed to stop bot');
+                }
+            }
+            
+            function updateBotStatus() {
+                const statusLight = document.getElementById('bot-status-light');
+                const statusText = document.getElementById('bot-status-text');
+                
+                // This would check real bot status from API
+                // For now, we'll update it based on last action
+                const isRunning = localStorage.getItem('bot_running') === 'true';
+                
+                if (isRunning) {
+                    statusLight.style.background = '#51cf66';
+                    statusText.textContent = 'RUNNING';
+                    statusText.style.color = '#51cf66';
+                } else {
+                    statusLight.style.background = '#aaa';
+                    statusText.textContent = 'STOPPED';
+                    statusText.style.color = '#aaa';
+                }
+            }
+            
+            async function refreshLiveDashboard() {
+                try {
+                    const res = await fetch('/api/trades/stats', {
+                        headers: { 'Authorization': 'Bearer ' + authToken }
+                    });
+                    const stats = await res.json();
+                    
+                    // Update live stats
+                    document.getElementById('live-pnl').textContent = '$' + stats.total_pnl.toFixed(2);
+                    if (stats.total_pnl >= 0) {
+                        document.getElementById('live-pnl').style.color = '#51cf66';
+                    } else {
+                        document.getElementById('live-pnl').style.color = '#ff6b6b';
+                    }
+                    
+                    console.log('✓ Dashboard refreshed');
+                } catch (err) {
+                    console.error('Failed to refresh dashboard:', err);
+                }
+            }
+            
+            async function disconnectMT5() {
+                if (confirm('Disconnect from MT5?')) {
+                    document.getElementById('live-dashboard').style.display = 'none';
+                    alert('Disconnected from MT5');
+                }
+            }
+            
+            function handleServerChange() {
+                const selected = document.getElementById('mt5-server-list').value;
+                const customInput = document.getElementById('mt5-custom-server');
+                
+                if (selected === 'custom') {
+                    customInput.style.display = 'block';
+                    customInput.focus();
+                } else {
+                    customInput.style.display = 'none';
+                }
+            }
+            
+            function filterServers() {
+                const searchText = document.getElementById('mt5-server-search').value.toLowerCase();
+                const select = document.getElementById('mt5-server-list');
+                const options = select.getElementsByTagName('option');
+                
+                for (let i = 0; i < options.length; i++) {
+                    if (options[i].value === '' || options[i].value === 'custom') continue;
+                    options[i].style.display = options[i].value.toLowerCase().includes(searchText) ? '' : 'none';
+                }
+            }
+            
+            async function setSymbols() {
+                const symbols = document.getElementById('symbols').value.split(',').map(s => s.trim());
+                await fetch('/api/user/symbols', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbols })
+                });
+                alert('Symbols updated!');
+            }
+            
+            async function startBot() {
+                const res = await fetch('/api/bot/start', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + authToken }
+                });
+                if (res.ok) {
+                    localStorage.setItem('bot_running', 'true');
+                    alert('✓ Bot started!');
+                    updateBotStatus();
+                } else {
+                    alert('Error starting bot');
+                }
+                loadStats();
+            }
+            
+            async function stopBot() {
+                await fetch('/api/bot/stop', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + authToken }
+                });
+                localStorage.setItem('bot_running', 'false');
+                alert('Bot stopped');
+                updateBotStatus();
+                loadStats();
+            }
+            
+            function logout() {
+                localStorage.removeItem('auth_token');
+                authToken = null;
+                showTab('register');
+            }
+            
+            if (authToken) {
+                loadDashboard();
+            }
+        </script>
+    </body>
+    </html>
+    '''
+    return render_template_string(html_template)
 
 
 # ============ INITIALIZATION ============
