@@ -1,3 +1,41 @@
+@app.route('/api/mt5/sync', methods=['POST'])
+def mt5_sync():
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if token != "your_secure_sync_token":
+        return jsonify({'error': 'Unauthorized'}), 401
+    data = request.json
+    # Find user by MT5 account number
+    mt5_account = str(data.get('login'))
+    user = User.query.filter_by(mt5_account=mt5_account).first()
+    if not user:
+        return jsonify({'error': 'User not found for this MT5 account'}), 404
+    # Update account info fields (add more as needed)
+    user.mt5_balance = float(data.get('balance', 0))
+    user.mt5_equity = float(data.get('equity', 0))
+    user.mt5_margin = float(data.get('margin', 0))
+    user.mt5_margin_free = float(data.get('margin_free', 0))
+    user.mt5_leverage = int(data.get('leverage', 0))
+    user.mt5_update_time = datetime.utcnow()
+    db.session.commit()
+    return jsonify({'message': 'MT5 account info synced'}), 200
+@app.route('/api/auth/activate', methods=['POST'])
+def activate_account():
+    data = request.get_json()
+    username = data.get('username')
+    code = data.get('code')
+    if not username or not code:
+        return jsonify({'error': 'Username and activation code required'}), 400
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    if user.is_active:
+        return jsonify({'error': 'Account already activated'}), 400
+    if user.activation_code != code:
+        return jsonify({'error': 'Invalid activation code'}), 400
+    user.is_active = True
+    user.activation_code = None
+    db.session.commit()
+    return jsonify({'message': 'Account activated successfully'}), 200
 """
 DababyBot SaaS Platform - Multi-User Backend with MT5 Trading
 Handles user authentication, MT5 connections, bot execution, and trading
@@ -172,7 +210,11 @@ class User(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     username = db.Column(db.String(80), unique=True, nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
+    phone = db.Column(db.String(32), unique=True, nullable=False)
+    country = db.Column(db.String(64), nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
+    activation_code = db.Column(db.String(16), nullable=True)
+    is_active = db.Column(db.Boolean, default=False)
     
     # MT5 Credentials (encrypted in production)
     mt5_server = db.Column(db.String(100))
@@ -360,38 +402,85 @@ def _run_bot_with_stop(user_id, account, server, password, stop_event):
 
 @app.route('/api/auth/register', methods=['POST'])
 def register():
-    """Register new user"""
+    """Register new user with activation, phone, country"""
     data = request.get_json()
-    
-    if not data.get('username') or not data.get('email') or not data.get('password'):
-        return jsonify({'error': 'Missing required fields'}), 400
-    
-    # Check if user exists
-    if User.query.filter_by(username=data['username']).first():
+    username = data.get('username')
+    email = data.get('email')
+    password = data.get('password')
+    phone = data.get('phone')
+    country = data.get('country')
+
+    # Basic validation
+    if not username or not email or not password or not phone or not country:
+        return jsonify({'error': 'All fields are required'}), 400
+
+    # Email format validation
+    import re
+    email_regex = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+    if not re.match(email_regex, email):
+        return jsonify({'error': 'Invalid email address'}), 400
+
+    # Phone format validation (international)
+    phone_regex = r"^\+?[1-9]\d{7,14}$"
+    if not re.match(phone_regex, phone):
+        return jsonify({'error': 'Invalid phone number format'}), 400
+
+    if len(password) < 8:
+        return jsonify({'error': 'Password must be at least 8 characters'}), 400
+
+    if User.query.filter_by(username=username).first():
         return jsonify({'error': 'Username already exists'}), 409
-    
-    if User.query.filter_by(email=data['email']).first():
+    if User.query.filter_by(email=email).first():
         return jsonify({'error': 'Email already registered'}), 409
-    
-    # Create user
+    if User.query.filter_by(phone=phone).first():
+        return jsonify({'error': 'Phone number already exists'}), 409
+
+    import random
+    activation_code = str(random.randint(100000, 999999))
+
     user = User(
-        username=data['username'],
-        email=data['email'],
+        username=username,
+        email=email,
+        phone=phone,
+        country=country,
+        is_active=False,
+        activation_code=activation_code,
         subscription_plan='free'
     )
-    user.set_password(data['password'])
-    
+    user.set_password(password)
     db.session.add(user)
     db.session.commit()
-    
-    # Create access token
-    access_token = create_access_token(identity=user.id)
-    
-    return jsonify({
-        'message': 'User created successfully',
-        'access_token': access_token,
-        'user': user.to_dict()
-    }), 201
+
+    # Send activation email
+    try:
+        from email.mime.text import MIMEText
+        import smtplib
+        EMAIL_FROM = "malikukuti@gmail.com"  # Update as needed
+        EMAIL_PASSWORD = "qyyrpabxxtwygqto"  # Update as needed
+        subject = "Activate your DababyBot Account"
+        body = f"""
+        <html>
+        <body style='font-family:Segoe UI,Arial,sans-serif;'>
+        <h2 style='color:#4da6ff;'>Welcome to DababyBot!</h2>
+        <p>Hi <b>{username}</b>,</p>
+        <p>Thank you for registering. Please use the activation code below to activate your account:</p>
+        <div style='background:#f4f4f4;padding:18px 24px;border-radius:8px;font-size:1.3em;color:#222;letter-spacing:2px;width:max-content;margin:18px auto 18px auto;border-left:5px solid #4da6ff;'><b>{activation_code}</b></div>
+        <p>If you did not request this, please ignore this email.</p>
+        <p style='color:#aaa;font-size:0.95em;'>DababyBot Team</p>
+        </body>
+        </html>
+        """
+        msg = MIMEText(body, 'html')
+        msg["Subject"] = subject
+        msg["From"] = f"DababyBot <{EMAIL_FROM}>"
+        msg["To"] = email
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=30) as server:
+            server.login(EMAIL_FROM, EMAIL_PASSWORD)
+            server.sendmail(EMAIL_FROM, [email], msg.as_string())
+    except Exception as e:
+        print("[EMAIL ERROR]", e)
+
+    return jsonify({'message': 'User registered successfully. Please check your email for your activation code.'}), 201
 
 
 @app.route('/api/auth/login', methods=['POST'])
