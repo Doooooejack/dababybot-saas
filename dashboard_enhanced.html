@@ -221,6 +221,100 @@
             border-radius: 4px;
         }
         
+        /* Toast Notification Styles */
+        .toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 10000;
+            pointer-events: none;
+        }
+        
+        .toast {
+            background: #1a2332;
+            color: #fff;
+            padding: 16px 20px;
+            margin-bottom: 12px;
+            border-radius: 8px;
+            border-left: 4px solid;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            animation: slideIn 0.3s ease, slideOut 0.3s ease 4.7s forwards;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            pointer-events: auto;
+            max-width: 400px;
+        }
+        
+        .toast.error {
+            border-left-color: #ff6b6b;
+            background: rgba(255, 107, 107, 0.1);
+        }
+        
+        .toast.success {
+            border-left-color: #51cf66;
+            background: rgba(81, 207, 102, 0.1);
+        }
+        
+        .toast.warning {
+            border-left-color: #ffa94d;
+            background: rgba(255, 164, 77, 0.1);
+        }
+        
+        .toast.info {
+            border-left-color: #4da6ff;
+            background: rgba(77, 166, 255, 0.1);
+        }
+        
+        .toast-icon {
+            font-size: 1.2em;
+            flex-shrink: 0;
+        }
+        
+        .toast-message {
+            flex: 1;
+            font-size: 0.95em;
+            line-height: 1.4;
+        }
+        
+        .toast-close {
+            background: none;
+            border: none;
+            color: inherit;
+            cursor: pointer;
+            font-size: 1.2em;
+            padding: 0;
+            margin-left: 8px;
+            opacity: 0.6;
+            transition: opacity 0.2s;
+        }
+        
+        .toast-close:hover {
+            opacity: 1;
+        }
+        
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+        
+        @keyframes slideOut {
+            from {
+                transform: translateX(0);
+                opacity: 1;
+            }
+            to {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+        }
+        
         @keyframes shake {
             0%, 100% { transform: translateX(0); }
             25% { transform: translateX(-5px); }
@@ -969,6 +1063,7 @@
                     localStorage.setItem('auth_token', data.access_token);
                     msgDiv.innerHTML = '<div class="success">✅ Logged in successfully!</div>';
                     authToken = data.access_token;
+                    showToast('Login successful - Loading dashboard...', 'success');
                     setTimeout(() => loadDashboard(), 1000);
                 } else {
                     msgDiv.innerHTML = '<div class="error">❌ ' + data.error + '</div>';
@@ -992,7 +1087,8 @@
                 loadStats();
                 checkSubscriptionStatus();  // Check subscription on load
             } catch (err) {
-                alert('Error loading profile');
+                console.error('Error loading profile:', err);
+                showToast('Failed to load profile. Please refresh the page.', 'error');
             }
         }
         
@@ -1095,7 +1191,7 @@
                 'PREMIUM': '$999/year'
             };
             
-            alert(`Redirecting to checkout for ${plan} plan (${prices[plan]})...\n\nIn production, this would use:\n- Stripe Checkout\n- PayPal\n- 2Checkout\n\nAfter payment, you'll receive your unique key via email.`);
+            alert(`Redirecting to checkout for ${plan} plan (${prices[plan]})...\n\n✨ Payment Methods (Production):\n- Stripe Checkout\n- PayPal\n- 2Checkout\n\n📧 After payment, your unique key will be sent via email.`);
             
             // Example: redirect to payment gateway
             // window.location.href = `/checkout?plan=${plan}`;
@@ -1118,7 +1214,7 @@
             if (server === 'custom') server = customServer;
             
             if (!server || !account || !password) {
-                alert('❌ Please fill all MT5 fields');
+                showToast('Please fill all MT5 connection fields', 'warning');
                 return;
             }
             
@@ -1130,7 +1226,7 @@
             
             if (res.ok) {
                 const data = await res.json();
-                alert('✅ MT5 Connected!');
+                showToast('MT5 Account connected successfully!', 'success');
                 document.getElementById('mt5-account').value = '';
                 document.getElementById('mt5-password').value = '';
                 
@@ -1142,7 +1238,7 @@
                 }
             } else {
                 const errorData = await res.json();
-                alert(`❌ MT5 connection failed: ${errorData.error || 'Unknown error'}`);
+                showToast(errorData.error || 'MT5 connection failed', 'error');
             }
         }
         
@@ -1187,17 +1283,23 @@
             if (res.ok) {
                 const data = await res.json();
                 showLiveDashboard(data.account);
-                alert('✅ Account info refreshed');
+                showToast('Account info refreshed', 'success');
             } else {
-                alert('❌ Failed to refresh account info');
+                showToast('Failed to refresh account info', 'error');
             }
         }
         
         async function startBotLive() {
             const symbols = document.getElementById('dashboard-symbols').value.split(',').map(s => s.trim());
             
-            if (confirm('⚠️ WARNING: You are about to activate automated trading. Ensure you understand the risks. Continue?')) {
-                const res = await fetch('/api/bot/start', {
+            if (!symbols.length || !symbols[0]) {
+                showToast('Please enter at least one symbol', 'warning');
+                return;
+            }
+            
+            showToast('⏳ Starting bot...', 'info');
+            
+            const res = await fetch('/api/bot/start', {
                     method: 'POST',
                     headers: { 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' },
                     body: JSON.stringify({ symbols })
@@ -1207,16 +1309,16 @@
                 
                 if (res.ok) {
                     localStorage.setItem('bot_running', 'true');
-                    alert('✅ Bot is RUNNING!');
+                    showToast('🚀 Bot is RUNNING - Monitoring trades...', 'success');
                     updateBotStatus();
                 } else {
                     // Check if subscription required
                     if (data.requires_subscription) {
-                        alert('❌ Active subscription required to run the bot.\n\nPlease enter your subscription key in the "Subscription Required" section above.');
+                        showToast('Active subscription required to run the bot. Please enter your subscription key above.', 'warning');
                     } else if (data.subscription_expired) {
-                        alert('❌ Your subscription has expired.\n\nPlease renew your subscription to continue using the bot.');
+                        showToast('Your subscription has expired. Please renew to continue using the bot.', 'warning');
                     } else {
-                        alert('❌ Failed to start bot: ' + data.error);
+                        showToast(data.error || 'Failed to start bot', 'error');
                     }
                 }
             }
@@ -1230,7 +1332,7 @@
             
             if (res.ok) {
                 localStorage.setItem('bot_running', 'false');
-                alert('✅ Bot stopped');
+                showToast('✅ Bot stopped', 'success');
                 updateBotStatus();
             }
         }
@@ -1258,18 +1360,65 @@
             document.getElementById('mt5-custom-server').style.display = selected === 'custom' ? 'block' : 'none';
         }
         
+        // Professional Toast Notification System
+        function showToast(message, type = 'info', duration = 5000) {
+            // Create container if it doesn't exist
+            let container = document.querySelector('.toast-container');
+            if (!container) {
+                container = document.createElement('div');
+                container.className = 'toast-container';
+                document.body.appendChild(container);
+            }
+            
+            // Create toast element
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            
+            // Map type to icon
+            const icons = {
+                success: '✅',
+                error: '❌',
+                warning: '⚠️',
+                info: 'ℹ️'
+            };
+            
+            toast.innerHTML = `
+                <span class="toast-icon">${icons[type] || '•'}</span>
+                <span class="toast-message">${message}</span>
+                <button class="toast-close" onclick="this.parentElement.remove()">×</button>
+            `;
+            
+            container.appendChild(toast);
+            
+            // Auto remove after duration
+            setTimeout(() => {
+                if (toast.parentElement) toast.remove();
+            }, duration);
+        }
+        
         async function refreshLiveDashboard() {
             loadStats();
-            alert('✅ Dashboard refreshed');
+            showToast('Dashboard refreshed successfully', 'success');
         }
         
         function logout() {
-            if (confirm('Are you sure?')) {
+            if (confirm('Are you sure you want to logout?')) {
                 localStorage.removeItem('auth_token');
                 authToken = null;
-                showTab('register');
+                showToast('Logged out successfully', 'success', 2000);
+                setTimeout(() => showTab('register'), 800);
             }
         }
+        
+        // Add HTML for toast container on page load
+        window.addEventListener('load', () => {
+            // Initialize toast container if not exists
+            if (!document.querySelector('.toast-container')) {
+                const container = document.createElement('div');
+                container.className = 'toast-container';
+                document.body.appendChild(container);
+            }
+        });
         
         if (authToken) loadDashboard();
     </script>
