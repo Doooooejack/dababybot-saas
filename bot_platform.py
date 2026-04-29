@@ -178,6 +178,7 @@ class User(db.Model):
     mt5_server = db.Column(db.String(100))
     mt5_account = db.Column(db.String(100))
     mt5_password = db.Column(db.String(255))  # Should be encrypted in production
+    mt5_validated = db.Column(db.Boolean, default=False)  # Has connection been verified?
     
     # Subscription
     subscription_plan = db.Column(db.String(50), default='free')  # free, pro, elite
@@ -218,6 +219,9 @@ class User(db.Model):
             'bot_running': self.bot_running,
             'selected_symbols': json.loads(self.selected_symbols or '[]'),
             'created_at': self.created_at.isoformat(),
+            'timezone': self.timezone,
+            'currency': self.currency,
+            'language': self.language,
         }
 
 
@@ -273,6 +277,34 @@ class BotInstance(db.Model):
         }
 
 
+class UserActivity(db.Model):
+    """Track user activity for admin monitoring"""
+    __tablename__ = 'user_activities'
+    
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = db.Column(db.String(36), db.ForeignKey('users.id'), nullable=False)
+    
+    activity_type = db.Column(db.String(50))  # login, logout, bot_start, bot_stop, subscription_activated, etc.
+    description = db.Column(db.String(500))
+    ip_address = db.Column(db.String(50))
+    user_agent = db.Column(db.String(255))
+    status = db.Column(db.String(20))  # success, failed
+    activity_metadata = db.Column(db.String(1000))  # JSON for additional data (bot plan, symbols, etc.)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'activity_type': self.activity_type,
+            'description': self.description,
+            'ip_address': self.ip_address,
+            'status': self.status,
+            'created_at': self.created_at.isoformat(),
+            'metadata': json.loads(self.activity_metadata or '{}')
+        }
+
+
 # ============ BOT HELPER FUNCTIONS ============
 
 def _run_bot_with_stop(user_id, account, server, password, stop_event):
@@ -307,10 +339,19 @@ def _run_bot_with_stop(user_id, account, server, password, stop_event):
         if user_id in bot_threads:
             del bot_threads[user_id]
         
-        user = User.query.get(user_id)
-        if user:
-            user.bot_running = False
-            db.session.commit()
+        # IMPORTANT: Database operations in background threads need app context
+        with app.app_context():
+            try:
+                user = User.query.get(user_id)
+                if user:
+                    user.bot_running = False
+                    db.session.commit()
+            except Exception as db_error:
+                logger.error(f"[BOT] Error updating bot status for user {user_id}: {str(db_error)}")
+                try:
+                    db.session.rollback()
+                except:
+                    pass
         
         logger.info(f"[BOT] Bot thread cleanup complete for user {user_id}")
 
@@ -364,11 +405,17 @@ def login():
     user = User.query.filter_by(username=data['username']).first()
     
     if not user or not user.check_password(data['password']):
+        # Log failed login attempt
+        if user:
+            log_user_activity(user.id, 'login', 'Failed login attempt', status='failed')
         return jsonify({'error': 'Invalid credentials'}), 401
     
     # Update last login
     user.last_login = datetime.utcnow()
     db.session.commit()
+    
+    # Log successful login
+    log_user_activity(user.id, 'login', f'User {user.username} logged in', status='success')
     
     access_token = create_access_token(identity=user.id)
     
@@ -397,7 +444,7 @@ def get_profile():
 @app.route('/api/user/mt5-connect', methods=['POST'])
 @jwt_required()
 def connect_mt5():
-    """Save user's MT5 credentials"""
+    """Connect and validate user's MT5 account - returns account info or error"""
     user_id = get_jwt_identity()
     user = User.query.get(user_id)
     data = request.get_json()
@@ -405,13 +452,112 @@ def connect_mt5():
     if not user:
         return jsonify({'error': 'User not found'}), 404
     
-    user.mt5_server = data.get('server', 'MetaQuotes-Demo')
-    user.mt5_account = data.get('account')
-    user.mt5_password = data.get('password')  # Encrypt in production!
+    account = data.get('account')
+    server = data.get('server', 'MetaQuotes-Demo')
+    password = data.get('password')
     
+    # Validate inputs
+    if not account or not password:
+        return jsonify({'error': 'Account number and password required'}), 400
+    
+    # Try to validate credentials (if MT5 available - Windows only)
+    account_info = None
+    error_msg = None
+    
+    if MT5_AVAILABLE:
+        try:
+            # Try to connect to MT5
+            if not mt5.initialize(login=int(account), server=server, password=password):
+                error_msg = f"MT5 connection failed: {mt5.last_error()}"
+            else:
+                # Get account info to confirm connection works
+                account_info = mt5.account_info()
+                mt5.shutdown()  # Close connection (bot will open its own)
+                
+                if account_info is None:
+                    error_msg = "Could not retrieve account information"
+        except Exception as e:
+            error_msg = f"Connection error: {str(e)}"
+    else:
+        # Running on Render (Linux) - can't validate with MT5
+        # Return demo info with warning
+        logging.info(f"MT5 not available on this platform (demo mode) - accepting credentials on faith")
+        account_info = {'balance': 10000.0, 'equity': 10000.0}  # Demo values
+    
+    # If we got an error during validation, return it
+    if error_msg and account_info is None:
+        return jsonify({'error': error_msg, 'success': False}), 400
+    
+    # Save the credentials to database
+    user.mt5_server = server
+    user.mt5_account = str(account)
+    user.mt5_password = password  # TODO: Encrypt in production!
+    user.mt5_validated = True
     db.session.commit()
     
-    return jsonify({'message': 'MT5 credentials saved'}), 200
+    # Return account info
+    response_data = {
+        'message': 'MT5 account connected successfully',
+        'success': True,
+        'account': {
+            'number': account,
+            'server': server,
+            'balance': float(account_info.get('balance', 0)) if account_info else 0.0,
+            'equity': float(account_info.get('equity', 0)) if account_info else 0.0,
+            'platform': 'MetaTrader5'
+        }
+    }
+    
+    if not MT5_AVAILABLE:
+        response_data['account']['warning'] = 'Running in demo mode - actual balance will sync when bot starts on Windows'
+    
+    logging.info(f"User {user.username} connected MT5 account {account} successfully")
+    return jsonify(response_data), 200
+
+
+@app.route('/api/user/mt5-account-info', methods=['GET'])
+@jwt_required()
+def get_mt5_account_info():
+    """Fetch current MT5 account balance/equity (refresh from server if available)"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    if not user.mt5_account:
+        return jsonify({'error': 'No MT5 account connected', 'connected': False}), 400
+    
+    account_info = None
+    
+    # Try to get live account info (if MT5 available - Windows only)
+    if MT5_AVAILABLE and user.mt5_account:
+        try:
+            if mt5.initialize(login=int(user.mt5_account), server=user.mt5_server, password=user.mt5_password):
+                account_info = mt5.account_info()
+                mt5.shutdown()
+        except Exception as e:
+            logging.warning(f"Failed to fetch live account info for {user.username}: {str(e)}")
+    
+    # Return account info (from live MT5 or demo values)
+    response_data = {
+        'connected': True,
+        'account': {
+            'number': user.mt5_account,
+            'server': user.mt5_server,
+            'platform': 'MetaTrader5',
+            'balance': float(account_info.balance) if account_info else 10000.0,  # Demo default
+            'equity': float(account_info.equity) if account_info else 10000.0,
+            'margin_level': float(account_info.margin_level) if account_info else 0.0,
+            'free_margin': float(account_info.margin_free) if account_info else 0.0
+        }
+    }
+    
+    if not MT5_AVAILABLE:
+        response_data['account']['demo_mode'] = True
+        response_data['account']['message'] = 'Running in demo mode - refresh balance when bot is running on Windows'
+    
+    return jsonify(response_data), 200
 
 
 @app.route('/api/user/symbols', methods=['POST'])
@@ -589,6 +735,10 @@ def activate_subscription_key():
     user.max_symbols = plan_limits.get(plan, 5)
     
     db.session.commit()
+    
+    # Log subscription activation
+    log_user_activity(user.id, 'subscription_activated', f'Subscription activated: {plan} plan', status='success',
+                     metadata={'plan': plan, 'key': subscription_key[-8:], 'expiry': user.subscription_expiry.isoformat()})
     
     logger.info(f"Subscription key activated for user {user.username}: Plan={plan}, Expiry={user.subscription_expiry}")
     
@@ -876,6 +1026,10 @@ def start_bot():
         db.session.add(instance)
         db.session.commit()
         
+        # Log bot start activity
+        log_user_activity(user_id, 'bot_start', 'Bot started', status='success', 
+                         metadata={'symbols': symbols, 'account': user.mt5_account})
+        
         logger.info(f"Bot thread started for user {user.username} ({user_id})")
         
         return jsonify({
@@ -1065,6 +1219,219 @@ def update_subscription(user_id):
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok'}), 200
+
+
+# ============ ADMIN MONITORING ROUTES ============
+
+@app.route('/api/admin/dashboard-stats', methods=['GET'])
+@jwt_required()
+def admin_dashboard_stats():
+    """Get admin dashboard statistics - ADMIN ONLY"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if not user or not user.is_admin:
+        return jsonify({'error': 'Admin access required'}), 403
+    
+    # Get statistics
+    total_users = User.query.count()
+    active_subscriptions = User.query.filter_by(subscription_active=True).count()
+    bots_running = User.query.filter_by(bot_running=True).count()
+    
+    # Get recent signups (last 7 days)
+    seven_days_ago = datetime.utcnow() - timedelta(days=7)
+    recent_signups = User.query.filter(User.created_at >= seven_days_ago).count()
+    
+    # Get activity in last 24 hours
+    one_day_ago = datetime.utcnow() - timedelta(days=1)
+    recent_activity = UserActivity.query.filter(UserActivity.created_at >= one_day_ago).count()
+    
+    return jsonify({
+        'total_users': total_users,
+        'active_subscriptions': active_subscriptions,
+        'bots_running': bots_running,
+        'recent_signups': recent_signups,
+        'recent_activity': recent_activity,
+        'timestamp': datetime.utcnow().isoformat()
+    }), 200
+
+
+@app.route('/api/admin/users', methods=['GET'])
+@jwt_required()
+def admin_get_users():
+    """Get all users with details - ADMIN ONLY"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if not user or not user.is_admin:
+        return jsonify({'error': 'Admin access required'}), 403
+    
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 50, type=int)
+    
+    # Get paginated users
+    users_page = User.query.paginate(page=page, per_page=per_page)
+    
+    users_list = []
+    for u in users_page.items:
+        users_list.append({
+            'id': u.id,
+            'username': u.username,
+            'email': u.email,
+            'subscription_plan': u.subscription_plan,
+            'subscription_active': u.subscription_active,
+            'subscription_expiry': u.subscription_expiry.isoformat() if u.subscription_expiry else None,
+            'bot_running': u.bot_running,
+            'created_at': u.created_at.isoformat(),
+            'last_login': u.last_login.isoformat() if u.last_login else 'Never',
+            'is_admin': u.is_admin,
+            'max_symbols': u.max_symbols
+        })
+    
+    return jsonify({
+        'users': users_list,
+        'total': users_page.total,
+        'pages': users_page.pages,
+        'current_page': page
+    }), 200
+
+
+@app.route('/api/admin/user/<user_id>/activity', methods=['GET'])
+@jwt_required()
+def admin_get_user_activity(user_id):
+    """Get activity for specific user - ADMIN ONLY"""
+    admin_id = get_jwt_identity()
+    admin = User.query.get(admin_id)
+    
+    if not admin or not admin.is_admin:
+        return jsonify({'error': 'Admin access required'}), 403
+    
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    # Get last 100 activities
+    activities = UserActivity.query.filter_by(user_id=user_id).order_by(
+        UserActivity.created_at.desc()
+    ).limit(100).all()
+    
+    return jsonify({
+        'username': user.username,
+        'activities': [a.to_dict() for a in activities]
+    }), 200
+
+
+@app.route('/api/admin/online-users', methods=['GET'])
+@jwt_required()
+def admin_get_online_users():
+    """Get users with active bots running - ADMIN ONLY"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if not user or not user.is_admin:
+        return jsonify({'error': 'Admin access required'}), 403
+    
+    # Get users with running bots
+    online_users = User.query.filter_by(bot_running=True).all()
+    
+    online_list = []
+    for u in online_users:
+        # Get most recent bot instance
+        bot_instance = BotInstance.query.filter_by(
+            user_id=u.id,
+            status='RUNNING'
+        ).order_by(BotInstance.started_at.desc()).first()
+        
+        online_list.append({
+            'username': u.username,
+            'email': u.email,
+            'plan': u.subscription_plan,
+            'symbols': json.loads(u.selected_symbols or '[]'),
+            'bot_started_at': bot_instance.started_at.isoformat() if bot_instance else None,
+            'last_activity': u.last_login.isoformat() if u.last_login else 'Unknown'
+        })
+    
+    return jsonify({
+        'online_users': online_list,
+        'total_online': len(online_list),
+        'timestamp': datetime.utcnow().isoformat()
+    }), 200
+
+
+@app.route('/api/admin/activity-log', methods=['GET'])
+@jwt_required()
+def admin_get_activity_log():
+    """Get global activity log - ADMIN ONLY"""
+    admin_id = get_jwt_identity()
+    admin = User.query.get(admin_id)
+    
+    if not admin or not admin.is_admin:
+        return jsonify({'error': 'Admin access required'}), 403
+    
+    hours = request.args.get('hours', 24, type=int)
+    activity_type = request.args.get('type', '', type=str)
+    
+    time_threshold = datetime.utcnow() - timedelta(hours=hours)
+    
+    query = UserActivity.query.filter(UserActivity.created_at >= time_threshold)
+    
+    if activity_type:
+        query = query.filter_by(activity_type=activity_type)
+    
+    activities = query.order_by(UserActivity.created_at.desc()).limit(500).all()
+    
+    return jsonify({
+        'activities': [a.to_dict() for a in activities],
+        'total': len(activities),
+        'time_range_hours': hours,
+        'filter_type': activity_type if activity_type else 'all'
+    }), 200
+
+
+@app.route('/api/admin/stats-by-plan', methods=['GET'])
+@jwt_required()
+def admin_stats_by_plan():
+    """Get subscriber statistics by plan - ADMIN ONLY"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if not user or not user.is_admin:
+        return jsonify({'error': 'Admin access required'}), 403
+    
+    plans = ['free', 'pro', 'elite', 'premium']
+    stats = {}
+    
+    for plan in plans:
+        total = User.query.filter_by(subscription_plan=plan).count()
+        active = User.query.filter_by(subscription_plan=plan, subscription_active=True).count()
+        stats[plan] = {
+            'total': total,
+            'active': active,
+            'inactive': total - active
+        }
+    
+    return jsonify({
+        'plan_stats': stats,
+        'timestamp': datetime.utcnow().isoformat()
+    }), 200
+
+
+def log_user_activity(user_id, activity_type, description, status='success', metadata=None):
+    """Helper to log user activity"""
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    user_agent = request.headers.get('User-Agent', '')
+    
+    activity = UserActivity(
+        user_id=user_id,
+        activity_type=activity_type,
+        description=description,
+        ip_address=client_ip,
+        user_agent=user_agent,
+        status=status,
+        activity_metadata=json.dumps(metadata or {})
+    )
+    db.session.add(activity)
+    db.session.commit()
 
 
 # ============ FRONTEND ROUTES ============

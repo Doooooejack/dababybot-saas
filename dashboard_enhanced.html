@@ -868,7 +868,8 @@
                     <div style="margin-top: 20px;">
                         <button class="success" onclick="startBotLive()">▶️ RUN BOT</button>
                         <button class="danger" onclick="stopBotLive()">⏹️ STOP BOT</button>
-                        <button class="warning" onclick="refreshLiveDashboard()" style="color: #000;">🔄 Refresh</button>
+                        <button class="warning" onclick="refreshAccountInfo()" style="color: #000;">🔄 Refresh Balance</button>
+                        <button class="warning" onclick="refreshLiveDashboard()" style="color: #000;">📊 Refresh Stats</button>
                     </div>
                 </div>
                 
@@ -1128,24 +1129,68 @@
             });
             
             if (res.ok) {
+                const data = await res.json();
                 alert('✅ MT5 Connected!');
                 document.getElementById('mt5-account').value = '';
                 document.getElementById('mt5-password').value = '';
-                showLiveDashboard(server, account);
+                
+                // Use actual account info from API response
+                if (data.success && data.account) {
+                    showLiveDashboard(data.account);
+                } else {
+                    showLiveDashboard(null);
+                }
             } else {
-                alert('❌ MT5 connection failed');
+                const errorData = await res.json();
+                alert(`❌ MT5 connection failed: ${errorData.error || 'Unknown error'}`);
             }
         }
         
-        function showLiveDashboard(server, account) {
+        function showLiveDashboard(accountInfo) {
+            // Display account server and number
+            const server = accountInfo?.server || 'MetaQuotes-Demo';
+            const account = accountInfo?.number || 'Not connected';
+            const balance = accountInfo?.balance || 0;
+            const equity = accountInfo?.equity || 0;
+            const freeMargin = accountInfo?.free_margin || 0;
+            
             document.getElementById('dashboard-server').textContent = server;
             document.getElementById('dashboard-account').textContent = account;
-            document.getElementById('live-balance').textContent = '$10,000.00';
-            document.getElementById('live-equity').textContent = '$10,245.50';
-            document.getElementById('live-margin').textContent = '12%';
-            document.getElementById('live-pnl').textContent = '+$245.50';
+            document.getElementById('live-balance').textContent = '$' + balance.toFixed(2);
+            document.getElementById('live-equity').textContent = '$' + equity.toFixed(2);
+            
+            // Calculate margin level if available
+            const marginLevel = accountInfo?.margin_level || 0;
+            document.getElementById('live-margin').textContent = marginLevel > 0 ? (marginLevel * 100).toFixed(1) + '%' : 'N/A';
+            
+            // Calculate P&L
+            const pnl = equity - balance;
+            const pnlColor = pnl >= 0 ? 'green' : 'red';
+            document.getElementById('live-pnl').textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
+            document.getElementById('live-pnl').style.color = pnlColor;
+            
+            // Show warning if in demo mode
+            if (accountInfo?.demo_mode) {
+                document.getElementById('live-dashboard').innerHTML += '<p style="color: orange; font-size: 0.9em;">⚠️ Demo Mode: Running on Render. Real balance will sync when bot is active on Windows. <button onclick="refreshAccountInfo()">🔄 Refresh</button></p>';
+            }
+            
             document.getElementById('live-dashboard').style.display = 'block';
             updateBotStatus();
+        }
+        
+        async function refreshAccountInfo() {
+            const res = await fetch('/api/user/mt5-account-info', {
+                method: 'GET',
+                headers: { 'Authorization': 'Bearer ' + authToken }
+            });
+            
+            if (res.ok) {
+                const data = await res.json();
+                showLiveDashboard(data.account);
+                alert('✅ Account info refreshed');
+            } else {
+                alert('❌ Failed to refresh account info');
+            }
         }
         
         async function startBotLive() {
