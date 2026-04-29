@@ -1,41 +1,4 @@
-@app.route('/api/mt5/sync', methods=['POST'])
-def mt5_sync():
-    token = request.headers.get('Authorization', '').replace('Bearer ', '')
-    if token != "your_secure_sync_token":
-        return jsonify({'error': 'Unauthorized'}), 401
-    data = request.json
-    # Find user by MT5 account number
-    mt5_account = str(data.get('login'))
-    user = User.query.filter_by(mt5_account=mt5_account).first()
-    if not user:
-        return jsonify({'error': 'User not found for this MT5 account'}), 404
-    # Update account info fields (add more as needed)
-    user.mt5_balance = float(data.get('balance', 0))
-    user.mt5_equity = float(data.get('equity', 0))
-    user.mt5_margin = float(data.get('margin', 0))
-    user.mt5_margin_free = float(data.get('margin_free', 0))
-    user.mt5_leverage = int(data.get('leverage', 0))
-    user.mt5_update_time = datetime.utcnow()
-    db.session.commit()
-    return jsonify({'message': 'MT5 account info synced'}), 200
-@app.route('/api/auth/activate', methods=['POST'])
-def activate_account():
-    data = request.get_json()
-    username = data.get('username')
-    code = data.get('code')
-    if not username or not code:
-        return jsonify({'error': 'Username and activation code required'}), 400
-    user = User.query.filter_by(username=username).first()
-    if not user:
-        return jsonify({'error': 'User not found'}), 404
-    if user.is_active:
-        return jsonify({'error': 'Account already activated'}), 400
-    if user.activation_code != code:
-        return jsonify({'error': 'Invalid activation code'}), 400
-    user.is_active = True
-    user.activation_code = None
-    db.session.commit()
-    return jsonify({'message': 'Account activated successfully'}), 200
+
 """
 DababyBot SaaS Platform - Multi-User Backend with MT5 Trading
 Handles user authentication, MT5 connections, bot execution, and trading
@@ -399,6 +362,48 @@ def _run_bot_with_stop(user_id, account, server, password, stop_event):
 
 
 # ============ AUTHENTICATION ROUTES ============
+
+# --- Place all route decorators below app initialization ---
+
+@app.route('/api/mt5/sync', methods=['POST'])
+def mt5_sync():
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if token != "your_secure_sync_token":
+        return jsonify({'error': 'Unauthorized'}), 401
+    data = request.json
+    # Find user by MT5 account number
+    mt5_account = str(data.get('login'))
+    user = User.query.filter_by(mt5_account=mt5_account).first()
+    if not user:
+        return jsonify({'error': 'User not found for this MT5 account'}), 404
+    # Update account info fields (add more as needed)
+    user.mt5_balance = float(data.get('balance', 0))
+    user.mt5_equity = float(data.get('equity', 0))
+    user.mt5_margin = float(data.get('margin', 0))
+    user.mt5_margin_free = float(data.get('margin_free', 0))
+    user.mt5_leverage = int(data.get('leverage', 0))
+    user.mt5_update_time = datetime.utcnow()
+    db.session.commit()
+    return jsonify({'message': 'MT5 account info synced'}), 200
+
+@app.route('/api/auth/activate', methods=['POST'])
+def activate_account():
+    data = request.get_json()
+    username = data.get('username')
+    code = data.get('code')
+    if not username or not code:
+        return jsonify({'error': 'Username and activation code required'}), 400
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    if user.is_active:
+        return jsonify({'error': 'Account already activated'}), 400
+    if user.activation_code != code:
+        return jsonify({'error': 'Invalid activation code'}), 400
+    user.is_active = True
+    user.activation_code = None
+    db.session.commit()
+    return jsonify({'message': 'Account activated successfully'}), 200
 
 @app.route('/api/auth/register', methods=['POST'])
 def register():
