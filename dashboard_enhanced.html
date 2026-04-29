@@ -950,28 +950,81 @@
                 
                 <h4>⚙️ Trading Configuration</h4>
                 <div style="background: linear-gradient(135deg, #0d1b2a 0%, #162a3a 100%); padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #2a4a6a;">
-                    <label><strong>📌 Symbols (comma separated):</strong></label>
-                    <input type="text" id="dashboard-symbols" placeholder="EURUSD,GBPUSD,USDJPY" value="EURUSD">
+                    <!-- Symbol Selection -->
+                    <label><strong>📌 Select Trading Symbols:</strong></label>
+                    <div id="symbol-selector" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 15px;">
+                        <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 0; cursor: pointer;">
+                            <input type="checkbox" class="symbol-check" value="EURUSD" checked style="width: auto;"> EURUSD
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 0; cursor: pointer;">
+                            <input type="checkbox" class="symbol-check" value="GBPUSD" style="width: auto;"> GBPUSD
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 0; cursor: pointer;">
+                            <input type="checkbox" class="symbol-check" value="USDJPY" style="width: auto;"> USDJPY
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 0; cursor: pointer;">
+                            <input type="checkbox" class="symbol-check" value="XAUUSD" style="width: auto;"> XAUUSD
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 0; cursor: pointer;">
+                            <input type="checkbox" class="symbol-check" value="AUDUSD" style="width: auto;"> AUDUSD
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 0; cursor: pointer;">
+                            <input type="checkbox" class="symbol-check" value="NZDUSD" style="width: auto;"> NZDUSD
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 0; cursor: pointer;">
+                            <input type="checkbox" class="symbol-check" value="BTCUSD" style="width: auto;"> BTCUSD
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 0; cursor: pointer;">
+                            <input type="checkbox" class="symbol-check" value="USDCAD" style="width: auto;"> USDCAD
+                        </label>
+                    </div>
                     
-                    <label><strong>⚡ Risk per Trade (%):</strong></label>
-                    <input type="number" id="dashboard-risk" placeholder="2" value="2" min="0.1" max="5" style="width: auto;">
+                    <!-- Daily Loss & Profit Limits -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+                        <div>
+                            <label><strong>📉 Daily Loss Limit ($):</strong></label>
+                            <input type="number" id="daily-loss-limit" placeholder="100" value="100" min="10" step="10" style="width: 100%;">
+                            <small style="color: #888; font-size: 0.85em;">Bot stops when this loss is hit</small>
+                        </div>
+                        <div>
+                            <label><strong>📈 Daily Profit Target ($):</strong></label>
+                            <input type="number" id="daily-profit-target" placeholder="500" value="500" min="10" step="10" style="width: 100%;">
+                            <small style="color: #888; font-size: 0.85em;">Bot stops when this profit is reached</small>
+                        </div>
+                    </div>
                     
-                    <label><strong>📈 Lot Size:</strong></label>
-                    <input type="number" id="dashboard-lotsize" placeholder="0.1" value="0.1" min="0.01" style="width: auto;">
+                    <!-- Risk & Lot Size (kept for reference) -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+                        <div>
+                            <label><strong>⚡ Risk per Trade (%):</strong></label>
+                            <input type="number" id="dashboard-risk" placeholder="2" value="2" min="0.1" max="5" style="width: 100%;">
+                        </div>
+                        <div>
+                            <label><strong>📊 Lot Size:</strong></label>
+                            <input type="number" id="dashboard-lotsize" placeholder="0.1" value="0.1" min="0.01" style="width: 100%;">
+                        </div>
+                    </div>
                     
-                    <div style="margin-top: 20px;">
-                        <button class="success" onclick="startBotLive()">▶️ RUN BOT</button>
+                    <div style="margin-top: 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px;">
+                        <button class="success" onclick="startBotLive()">▶️ START BOT</button>
                         <button class="danger" onclick="stopBotLive()">⏹️ STOP BOT</button>
-                        <button class="warning" onclick="refreshAccountInfo()" style="color: #000;">🔄 Refresh Balance</button>
-                        <button class="warning" onclick="refreshLiveDashboard()" style="color: #000;">📊 Refresh Stats</button>
+                        <button class="warning" onclick="refreshAccountInfo()" style="color: #000;">🔄 Refresh</button>
+                        <button class="warning" onclick="refreshBotLogs()" style="color: #000;">📋 Refresh Logs</button>
                     </div>
                 </div>
                 
-                <h4>🚀 Bot Status</h4>
+                <h4>🚀 Bot Status & Live Logs</h4>
                 <p><span id="bot-status-light" class="bot-indicator stopped"></span><strong id="bot-status-text" style="color: #888;">STOPPED</strong></p>
                 
+                <!-- Bot Logs Viewer -->
+                <div style="background: linear-gradient(135deg, #0d1b2a 0%, #162a3a 100%); padding: 15px; border-radius: 8px; margin-top: 15px; border: 1px solid #2a4a6a; max-height: 300px; overflow-y: auto;">
+                    <div id="bot-logs" style="font-family: 'Courier New', monospace; font-size: 0.85em; line-height: 1.5; color: #4da6ff;">
+                        <div style="color: #888; text-align: center; padding: 20px;">⏳ Bot logs will appear here...</div>
+                    </div>
+                </div>
+                
                 <div style="background: rgba(255, 255, 255, 0.05); padding: 15px; border-radius: 8px; margin-top: 15px; border-left: 3px solid #4da6ff;">
-                    <p style="color: #888; font-size: 0.9rem; margin: 0;">💡 <strong>Tip:</strong> Start with 1-2 symbols and 0.1 lot size. Monitor performance before increasing risk.</p>
+                    <p style="color: #888; font-size: 0.9rem; margin: 0;">💡 <strong>Tip:</strong> Select 1-2 symbols to start. Set conservative daily loss limit ($50-100). Monitor live logs to see trading activity.</p>
                 </div>
             </div>
             
@@ -1290,38 +1343,91 @@
         }
         
         async function startBotLive() {
-            const symbols = document.getElementById('dashboard-symbols').value.split(',').map(s => s.trim());
+            // Get selected symbols from checkboxes
+            const symbolChecks = document.querySelectorAll('.symbol-check:checked');
+            const symbols = Array.from(symbolChecks).map(cb => cb.value);
             
-            if (!symbols.length || !symbols[0]) {
-                showToast('Please enter at least one symbol', 'warning');
+            if (!symbols.length) {
+                showToast('Please select at least one symbol', 'warning');
                 return;
             }
             
-            showToast('⏳ Starting bot...', 'info');
+            // Get daily loss/profit limits
+            const dailyLossLimit = parseFloat(document.getElementById('daily-loss-limit').value) || 100;
+            const dailyProfitTarget = parseFloat(document.getElementById('daily-profit-target').value) || 500;
+            
+            if (dailyLossLimit <= 0 || dailyProfitTarget <= 0) {
+                showToast('Daily loss and profit targets must be greater than 0', 'warning');
+                return;
+            }
+            
+            showToast('⏳ Starting bot with ' + symbols.join(', ') + '...', 'info');
             
             const res = await fetch('/api/bot/start', {
-                    method: 'POST',
-                    headers: { 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ symbols })
-                });
-                
-                const data = await res.json();
-                
-                if (res.ok) {
-                    localStorage.setItem('bot_running', 'true');
-                    showToast('🚀 Bot is RUNNING - Monitoring trades...', 'success');
-                    updateBotStatus();
+                method: 'POST',
+                headers: { 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    symbols,
+                    daily_loss_limit: dailyLossLimit,
+                    daily_profit_target: dailyProfitTarget
+                })
+            });
+            
+            const data = await res.json();
+            
+            if (res.ok) {
+                localStorage.setItem('bot_running', 'true');
+                showToast('🚀 Bot RUNNING - Symbols: ' + symbols.join(', '), 'success');
+                updateBotStatus();
+                // Start fetching logs
+                loadBotLogs();
+                // Auto-refresh logs every 3 seconds
+                if (!window.botLogsInterval) {
+                    window.botLogsInterval = setInterval(loadBotLogs, 3000);
+                }
+            } else {
+                // Check if subscription required
+                if (data.requires_subscription) {
+                    showToast('Active subscription required to run the bot. Please enter your subscription key above.', 'warning');
+                } else if (data.subscription_expired) {
+                    showToast('Your subscription has expired. Please renew to continue using the bot.', 'warning');
                 } else {
-                    // Check if subscription required
-                    if (data.requires_subscription) {
-                        showToast('Active subscription required to run the bot. Please enter your subscription key above.', 'warning');
-                    } else if (data.subscription_expired) {
-                        showToast('Your subscription has expired. Please renew to continue using the bot.', 'warning');
-                    } else {
-                        showToast(data.error || 'Failed to start bot', 'error');
-                    }
+                    showToast(data.error || 'Failed to start bot', 'error');
                 }
             }
+        }
+        
+        async function loadBotLogs() {
+            try {
+                const res = await fetch('/api/bot/logs', {
+                    headers: { 'Authorization': 'Bearer ' + authToken }
+                });
+                
+                if (res.ok) {
+                    const data = await res.json();
+                    const logsContainer = document.getElementById('bot-logs');
+                    
+                    // Build logs HTML
+                    let logsHTML = '';
+                    data.logs.forEach(log => {
+                        const timestamp = new Date(log.timestamp).toLocaleTimeString();
+                        const color = log.level === 'ERROR' ? '#ff6b6b' : log.level === 'WARNING' ? '#ffa94d' : '#4da6ff';
+                        logsHTML += `<div style="color: ${color};">[${timestamp}] ${log.message}</div>`;
+                    });
+                    
+                    logsContainer.innerHTML = logsHTML || '<div style="color: #888;">Waiting for trade logs...</div>';
+                    
+                    // Auto-scroll to bottom
+                    logsContainer.parentElement.scrollTop = logsContainer.parentElement.scrollHeight;
+                }
+            } catch (err) {
+                console.error('Error fetching bot logs:', err);
+            }
+        }
+        
+        function refreshBotLogs() {
+            loadBotLogs();
+            showToast('Logs refreshed', 'success', 1500);
         }
         
         async function stopBotLive() {
@@ -1334,6 +1440,15 @@
                 localStorage.setItem('bot_running', 'false');
                 showToast('✅ Bot stopped', 'success');
                 updateBotStatus();
+                
+                // Stop log polling
+                if (window.botLogsInterval) {
+                    clearInterval(window.botLogsInterval);
+                    window.botLogsInterval = null;
+                }
+                
+                // Clear logs display
+                document.getElementById('bot-logs').innerHTML = '<div style="color: #888; text-align: center; padding: 20px;">⏸️ Bot stopped - Logs cleared</div>';
             }
         }
         

@@ -985,6 +985,12 @@ def start_bot():
     if not user.mt5_account:
         return jsonify({'error': 'MT5 credentials not configured'}), 400
     
+    # Get bot configuration from request
+    data = request.get_json() or {}
+    symbols = data.get('symbols', ['EURUSD'])
+    daily_loss_limit = float(data.get('daily_loss_limit', 100))  # Default $100
+    daily_profit_target = float(data.get('daily_profit_target', 500))  # Default $500
+    
     try:
         # Verify MT5 connection first (if available)
         if MT5_AVAILABLE:
@@ -1103,6 +1109,64 @@ def bot_status():
         'symbols': json.loads(user.selected_symbols or '[]'),
         'subscription': user.subscription_plan
     }), 200
+
+
+@app.route('/api/bot/logs', methods=['GET'])
+@jwt_required()
+def get_bot_logs():
+    """Get recent bot logs for user"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    try:
+        # Try to read bot logs from file
+        log_file = os.path.join(os.path.dirname(__file__), f'bot_logs_{user_id}.log')
+        logs = []
+        
+        if os.path.exists(log_file):
+            # Read last 100 lines of log file
+            with open(log_file, 'r', encoding='utf-8') as f:
+                all_lines = f.readlines()
+                # Get last 100 lines
+                log_lines = all_lines[-100:] if len(all_lines) > 100 else all_lines
+                
+                for line in log_lines:
+                    line = line.strip()
+                    if line:
+                        # Parse timestamp if available
+                        logs.append({
+                            'timestamp': datetime.utcnow().isoformat(),
+                            'message': line,
+                            'level': 'INFO'
+                        })
+        
+        # If no logs yet, return placeholder
+        if not logs:
+            logs = [{
+                'timestamp': datetime.utcnow().isoformat(),
+                'message': '⏳ Bot logs will appear here once bot starts trading...',
+                'level': 'INFO'
+            }]
+        
+        return jsonify({
+            'logs': logs,
+            'total': len(logs),
+            'running': user.bot_running
+        }), 200
+    
+    except Exception as e:
+        logger.error(f"Error reading bot logs: {str(e)}")
+        return jsonify({
+            'logs': [{
+                'timestamp': datetime.utcnow().isoformat(),
+                'message': f'Error reading logs: {str(e)}',
+                'level': 'ERROR'
+            }],
+            'running': user.bot_running
+        }), 200
 
 
 # ============ TRADES ROUTES ============
