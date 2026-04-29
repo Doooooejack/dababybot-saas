@@ -1,0 +1,8 @@
+# If you have existing users, run a migration to add the following columns to the User table:
+# phone (unique, not null), country (not null), activation_code (nullable), is_active (default False)
+# Example (in SQLite):
+# ALTER TABLE user ADD COLUMN phone VARCHAR(32) UNIQUE NOT NULL DEFAULT '';
+# ALTER TABLE user ADD COLUMN country VARCHAR(64) NOT NULL DEFAULT '';
+# ALTER TABLE user ADD COLUMN activation_code VARCHAR(16);
+# ALTER TABLE user ADD COLUMN is_active BOOLEAN DEFAULT 0;
+# Update all existing users with valid phone/country or re-register.

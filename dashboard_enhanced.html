@@ -626,14 +626,46 @@
             <div id="register-msg"></div>
             <label>Username</label>
             <input type="text" id="reg-username" placeholder="Choose your trading handle">
-            
+
             <label>Email Address</label>
             <input type="email" id="reg-email" placeholder="your@email.com">
-            
+
+            <label>Phone Number</label>
+            <input type="tel" id="reg-phone" placeholder="e.g. +1234567890">
+
+            <label>Country</label>
+            <select id="reg-country">
+                <option value="">Select your country</option>
+                <option value="US">United States</option>
+                <option value="GB">United Kingdom</option>
+                <option value="CA">Canada</option>
+                <option value="AU">Australia</option>
+                <option value="ZA">South Africa</option>
+                <option value="NG">Nigeria</option>
+                <option value="KE">Kenya</option>
+                <option value="IN">India</option>
+                <option value="DE">Germany</option>
+                <option value="FR">France</option>
+                <option value="BR">Brazil</option>
+                <option value="SG">Singapore</option>
+                <option value="JP">Japan</option>
+                <option value="CN">China</option>
+                <option value="RU">Russia</option>
+                <option value="">─────────────</option>
+                <option value="Other">Other</option>
+            </select>
+
             <label>Password</label>
             <input type="password" id="reg-password" placeholder="Secure password (8+ characters)">
-            
+
             <button class="success" onclick="register()">✨ Create Account</button>
+
+            <div id="activation-section" style="display:none; margin-top:24px;">
+                <label>Activation Code</label>
+                <input type="text" id="activation-code" placeholder="Enter the code sent to your email">
+                <button class="success" onclick="activateAccount()">🔓 Activate Account</button>
+                <div id="activation-msg"></div>
+            </div>
         </div>
         
         <!-- LOGIN SECTION -->
@@ -1063,32 +1095,77 @@
         }
         
         async function register() {
-            const username = document.getElementById('reg-username').value;
-            const email = document.getElementById('reg-email').value;
+            const username = document.getElementById('reg-username').value.trim();
+            const email = document.getElementById('reg-email').value.trim();
             const password = document.getElementById('reg-password').value;
+            const phone = document.getElementById('reg-phone').value.trim();
+            const country = document.getElementById('reg-country').value;
             const msgDiv = document.getElementById('register-msg');
-            
-            if (!username || !email || !password) {
+
+            // Basic validation
+            if (!username || !email || !password || !phone || !country) {
                 msgDiv.innerHTML = '<div class="error">❌ Please fill all fields</div>';
                 return;
             }
-            
+
+            // Email validation
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            if (!emailRegex.test(email)) {
+                msgDiv.innerHTML = '<div class="error">❌ Please enter a valid email address</div>';
+                return;
+            }
+
+            // Phone validation (international format, e.g. +1234567890)
+            const phoneRegex = /^\+?[1-9]\d{7,14}$/;
+            if (!phoneRegex.test(phone)) {
+                msgDiv.innerHTML = '<div class="error">❌ Please enter a valid phone number (e.g. +1234567890)</div>';
+                return;
+            }
+
+            // Password strength (min 8 chars)
+            if (password.length < 8) {
+                msgDiv.innerHTML = '<div class="error">❌ Password must be at least 8 characters long</div>';
+                return;
+            }
+
             try {
                 const res = await fetch('/api/auth/register', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username, email, password })
+                    body: JSON.stringify({ username, email, password, phone, country })
                 });
                 const data = await res.json();
-                
+
                 if (res.ok) {
-                    localStorage.setItem('auth_token', data.access_token);
-                    msgDiv.innerHTML = '<div class="success">✅ Account created! Logging in...</div>';
-                    authToken = data.access_token;
-                    setTimeout(() => loadDashboard(), 1000);
+                    msgDiv.innerHTML = '<div class="success">✅ Registration successful! Please check your email for your activation code.'</div>;
+                    document.getElementById('activation-section').style.display = 'block';
                 } else {
-                    msgDiv.innerHTML = '<div class="error">❌ ' + data.error + '</div>';
+                    msgDiv.innerHTML = '<div class="error">❌ ' + (data.error || 'Registration failed') + '</div>';
                 }
+                    async function activateAccount() {
+                        const username = document.getElementById('reg-username').value.trim();
+                        const code = document.getElementById('activation-code').value.trim();
+                        const msgDiv = document.getElementById('activation-msg');
+                        if (!username || !code) {
+                            msgDiv.innerHTML = '<div class="error">❌ Please enter your username and activation code</div>';
+                            return;
+                        }
+                        try {
+                            const res = await fetch('/api/auth/activate', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ username, code })
+                            });
+                            const data = await res.json();
+                            if (res.ok) {
+                                msgDiv.innerHTML = '<div class="success">✅ Account activated! You can now log in.'</div>;
+                            } else {
+                                msgDiv.innerHTML = '<div class="error">❌ ' + (data.error || 'Activation failed') + '</div>';
+                            }
+                        } catch (err) {
+                            msgDiv.innerHTML = '<div class="error">❌ Network error</div>';
+                        }
+                    }
             } catch (err) {
                 msgDiv.innerHTML = '<div class="error">❌ Network error</div>';
             }
