@@ -615,25 +615,25 @@
         <p class="header-subtitle">Intelligent Automated Trading with Machine Learning</p>
         
         <div class="tab">
-            <button class="tab-btn active" onclick="showTab('register')">📝 Register</button>
-            <button class="tab-btn" onclick="showTab('login')">🔓 Login</button>
-            <button class="tab-btn" onclick="showTab('dashboard')">📊 Dashboard</button>
+            <button class="tab-btn active" onclick="showTab('register', event)">📝 Register</button>
+            <button class="tab-btn" onclick="showTab('login', event)">🔓 Login</button>
+            <button class="tab-btn" onclick="showTab('dashboard', event)">📊 Dashboard</button>
         </div>
         
         <!-- REGISTER SECTION -->
         <div id="register" class="card">
             <h2>📝 Create Account</h2>
             <div id="register-msg"></div>
-            <label>Username</label>
+            <label for="reg-username">Username</label>
             <input type="text" id="reg-username" placeholder="Choose your trading handle">
 
-            <label>Email Address</label>
+            <label for="reg-email">Email Address</label>
             <input type="email" id="reg-email" placeholder="your@email.com">
 
-            <label>Phone Number</label>
+            <label for="reg-phone">Phone Number</label>
             <input type="tel" id="reg-phone" placeholder="e.g. +1234567890">
 
-            <label>Country</label>
+            <label for="reg-country">Country</label>
             <select id="reg-country">
                 <option value="">Select your country</option>
                 <option value="AF">Afghanistan</option>
@@ -874,13 +874,13 @@
                 <option value="Other">Other</option>
             </select>
 
-            <label>Password</label>
+            <label for="reg-password">Password</label>
             <input type="password" id="reg-password" placeholder="Secure password (8+ characters)">
 
             <button class="success" onclick="register()">✨ Create Account</button>
 
             <div id="activation-section" style="display:none; margin-top:24px;">
-                <label>Activation Code</label>
+                <label for="activation-code">Activation Code</label>
                 <input type="text" id="activation-code" placeholder="Enter the code sent to your email">
                 <button class="success" onclick="activateAccount()">🔓 Activate Account</button>
                 <div id="activation-msg"></div>
@@ -891,10 +891,10 @@
         <div id="login" class="card hidden">
             <h2>🔓 Login to Your Account</h2>
             <div id="login-msg"></div>
-            <label>Username</label>
+            <label for="login-username">Username</label>
             <input type="text" id="login-username" placeholder="Your username">
             
-            <label>Password</label>
+            <label for="login-password">Password</label>
             <input type="password" id="login-password" placeholder="Your password">
             
             <button class="success" onclick="login()">🚀 Login</button>
@@ -1307,11 +1307,13 @@
         // Manual redeploy trigger - version 1.1
         let authToken = localStorage.getItem('auth_token');
         
-        function showTab(tab) {
+        function showTab(tab, event) {
             document.querySelectorAll('.card').forEach(el => el.classList.add('hidden'));
             document.getElementById(tab).classList.remove('hidden');
             document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
-            event.target.classList.add('active');
+            if (event && event.target) {
+                event.target.classList.add('active');
+            }
         }
         
         async function register() {
@@ -1443,7 +1445,7 @@
                 document.getElementById('user-name').textContent = user.username;
                 document.getElementById('user-plan').textContent = user.subscription_plan.toUpperCase();
                 
-                showTab('dashboard');
+                showTab('dashboard', null);
                 loadStats();
                 checkSubscriptionStatus();  // Check subscription on load
             } catch (err) {
@@ -1828,7 +1830,7 @@
                 localStorage.removeItem('auth_token');
                 authToken = null;
                 showToast('Logged out successfully', 'success', 2000);
-                setTimeout(() => showTab('register'), 800);
+                setTimeout(() => showTab('register', null), 800);
             }
         }
         
