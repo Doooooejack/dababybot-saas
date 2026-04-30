@@ -1371,24 +1371,30 @@
                 msgDiv.innerHTML = '<div class="error">❌ Network error. Please try again.</div>';
             }
             btn.disabled = false;
-                            return;
-                        }
-                        try {
-                            const res = await fetch('/api/auth/activate', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ username, code })
-                            });
-                            const data = await res.json();
-                            if (res.ok) {
-                                msgDiv.innerHTML = '<div class="success">✅ Account activated! You can now log in.'</div>;
-                            } else {
-                                msgDiv.innerHTML = '<div class="error">❌ ' + (data.error || 'Activation failed') + '</div>';
-                            }
-                        } catch (err) {
-                            msgDiv.innerHTML = '<div class="error">❌ Network error</div>';
-                        }
-                    }
+        }
+        
+        async function activateAccount() {
+            const username = document.getElementById('reg-username').value.trim();
+            const code = document.getElementById('activation-code').value.trim();
+            const msgDiv = document.getElementById('activation-msg');
+            
+            if (!code) {
+                msgDiv.innerHTML = '<div class="error">❌ Please enter your activation code</div>';
+                return;
+            }
+            
+            try {
+                const res = await fetch('/api/auth/activate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, code })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    msgDiv.innerHTML = '<div class="success">✅ Account activated! You can now log in.</div>';
+                } else {
+                    msgDiv.innerHTML = '<div class="error">❌ ' + (data.error || 'Activation failed') + '</div>';
+                }
             } catch (err) {
                 msgDiv.innerHTML = '<div class="error">❌ Network error</div>';
             }
