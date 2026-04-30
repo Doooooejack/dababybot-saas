@@ -1365,7 +1365,7 @@
                 const data = await res.json();
 
                 if (res.ok) {
-                    msgDiv.innerHTML = '<div class="success">✅ Registration successful! Please check your email for your activation code.'</div>;
+                    msgDiv.innerHTML = '<div class="success">✅ Registration successful! Please check your email for your activation code.</div>';
                     document.getElementById('activation-section').style.display = 'block';
                 } else {
                     msgDiv.innerHTML = '<div class="error">❌ ' + (data.error || 'Registration failed') + '</div>';
