@@ -1316,6 +1316,9 @@
             }
         }
         
+        // Store username for activation
+        let registeredUsername = '';
+
         async function register() {
             const btn = document.querySelector('#register-section button.success');
             btn.disabled = true;
@@ -1365,6 +1368,8 @@
                 const data = await res.json();
 
                 if (res.ok) {
+                    // Store username for activation step
+                    registeredUsername = username;
                     msgDiv.innerHTML = '<div class="success">✅ Registration successful! Please check your email for your activation code.</div>';
                     document.getElementById('activation-section').style.display = 'block';
                 } else {
@@ -1377,12 +1382,17 @@
         }
         
         async function activateAccount() {
-            const username = document.getElementById('reg-username').value.trim();
+            const username = registeredUsername;
             const code = document.getElementById('activation-code').value.trim();
             const msgDiv = document.getElementById('activation-msg');
             
             if (!code) {
                 msgDiv.innerHTML = '<div class="error">❌ Please enter your activation code</div>';
+                return;
+            }
+            
+            if (!username) {
+                msgDiv.innerHTML = '<div class="error">❌ Please register first before activating</div>';
                 return;
             }
             
@@ -1395,6 +1405,11 @@
                 const data = await res.json();
                 if (res.ok) {
                     msgDiv.innerHTML = '<div class="success">✅ Account activated! You can now log in.</div>';
+                    // Clear activation section after 2 seconds
+                    setTimeout(() => {
+                        document.getElementById('activation-section').style.display = 'none';
+                        document.getElementById('activation-code').value = '';
+                    }, 2000);
                 } else {
                     msgDiv.innerHTML = '<div class="error">❌ ' + (data.error || 'Activation failed') + '</div>';
                 }
