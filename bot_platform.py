@@ -1948,14 +1948,17 @@ def dashboard():
                 <button class="tab-btn" onclick="showTab('dashboard')">Dashboard</button>
             </div>
             
-            <!-- REGISTER SECTION -->
+<!-- REGISTER SECTION - FIXED -->
             <div id="register" class="card">
-                <h2>Create Account</h2>
+                <h2>✨ Create Account</h2>
                 <div id="register-msg"></div>
-                <input type="text" id="reg-username" placeholder="Username">
-                <input type="email" id="reg-email" placeholder="Email">
-                <input type="password" id="reg-password" placeholder="Password">
-                <button onclick="register()">Register</button>
+                <input type="text" id="reg-username" placeholder="Username (no spaces)" maxlength="20">
+                <input type="email" id="reg-email" placeholder="your@email.com">
+                <input type="password" id="reg-password" placeholder="Password (8+ chars)" minlength="8">
+                <button class="success" onclick="registerFixed()" style="width:100%; padding:15px; font-size:1.1rem;">✨ Create Account</button>
+                <p style="text-align:center; color:#aaa; font-size:0.9rem; margin-top:10px;">
+                    Have account? <a href="#" onclick="showTab('login')" style="color:#4da6ff;">Login →</a>
+                </p>
             </div>
             
             <!-- LOGIN SECTION -->
@@ -2235,35 +2238,50 @@ def dashboard():
                 event.target.classList.add('active');
             }
             
-            async function register() {
-                const username = document.getElementById('reg-username').value;
-                const email = document.getElementById('reg-email').value;
+async function registerFixed() {
+                console.log('🔥 Register clicked!');
+                const username = document.getElementById('reg-username').value.trim();
+                const email = document.getElementById('reg-email').value.trim();
                 const password = document.getElementById('reg-password').value;
                 const msgDiv = document.getElementById('register-msg');
                 
-                if (!username || !email || !password) {
-                    msgDiv.innerHTML = '<div class="error">Fill all fields</div>';
+                msgDiv.innerHTML = '';
+
+                if (!username || username.length < 3) {
+                    msgDiv.innerHTML = '<div class="error">❌ Username 3+ chars no spaces</div>';
+                    return;
+                }
+                if (!email || !email.includes('@')) {
+                    msgDiv.innerHTML = '<div class="error">❌ Valid email required</div>';
+                    return;
+                }
+                if (password.length < 8) {
+                    msgDiv.innerHTML = '<div class="error">❌ Password 8+ chars</div>';
                     return;
                 }
                 
+                msgDiv.innerHTML = '<div class="success">⏳ Creating...</div>';
+                
                 try {
+                    console.log('Sending:', {username, email});
                     const res = await fetch('/api/auth/register', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ username, email, password })
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({username, email, password, phone:'+1234567890', country:'USA'})
                     });
                     const data = await res.json();
+                    console.log('Response:', res.status, data);
                     
                     if (res.ok) {
-                        localStorage.setItem('auth_token', data.access_token);
-                        msgDiv.innerHTML = '<div class="success">✓ Registered! Logging in...</div>';
-                        authToken = data.access_token;
-                        setTimeout(() => loadDashboard(), 1000);
+                        msgDiv.innerHTML = '<div class="success">✅ Registered! Login now.</div>';
+                        document.getElementById('login-username').value = username;
+                        setTimeout(() => showTab('login'), 1500);
                     } else {
-                        msgDiv.innerHTML = '<div class="error">' + data.error + '</div>';
+                        msgDiv.innerHTML = '<div class="error">❌ ' + (data.error || 'Error') + '</div>';
                     }
                 } catch (err) {
-                    msgDiv.innerHTML = '<div class="error">Network error</div>';
+                    console.error('Network:', err);
+                    msgDiv.innerHTML = '<div class="error">❌ Network error - check F12</div>';
                 }
             }
             
