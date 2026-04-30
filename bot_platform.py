@@ -575,14 +575,47 @@ def register():
 
             body = f"""
             <html>
-            <body style='font-family:Segoe UI,Arial,sans-serif;'>
-            <h2 style='color:#4da6ff;'>Welcome to DababyBot!</h2>
-            <p>Hi <b>{username}</b>,</p>
-            <p>Thank you for registering for the <strong>{plan_label}</strong> plan.</p>
-            {code_html}
-            {code_message}
-            <p>If you did not request this, please ignore this email.</p>
-            <p style='color:#aaa;font-size:0.95em;'>DababyBot Team</p>
+            <head>
+                <style>
+                    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; }}
+                    .container {{ max-width: 600px; margin: 0 auto; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
+                    .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px 20px; text-align: center; }}
+                    .content {{ padding: 30px 20px; color: #333; line-height: 1.6; }}
+                    .plan-badge {{ background: #f0f4ff; color: #667eea; padding: 12px 16px; border-radius: 6px; display: inline-block; margin: 15px 0; font-weight: 600; }}
+                    .code-box {{ background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center; margin: 20px 0; border: 2px solid #e0e0e0; }}
+                    .code {{ font-size: 2em; letter-spacing: 3px; color: #667eea; font-weight: bold; font-family: 'Courier New', monospace; }}
+                    .info-box {{ background: #f8f9fa; border-left: 4px solid #667eea; padding: 15px; margin: 15px 0; border-radius: 4px; }}
+                    .footer {{ background: #f8f9fa; padding: 20px; text-align: center; color: #666; font-size: 12px; border-top: 1px solid #eee; }}
+                    .cta-button {{ background: #667eea; color: white; padding: 12px 30px; border-radius: 6px; text-decoration: none; display: inline-block; margin-top: 15px; font-weight: 600; }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <h1 style="margin: 0; font-size: 28px;">Welcome to DababyBot!</h1>
+                    </div>
+                    <div class="content">
+                        <p>Hi <b>{username}</b>,</p>
+                        <p>Thank you for joining DababyBot! Your account has been successfully created on the <span class="plan-badge">{plan_label.upper()} Plan</span>.</p>
+                        {code_html}
+                        <div class="info-box">
+                            {code_message}
+                        </div>
+                        <p style="margin-top: 20px;">You can now log into your account and start using DababyBot's powerful trading tools and automated strategies.</p>
+                        <p style="margin-top: 15px; color: #666; font-size: 14px;"><strong>What's Next?</strong></p>
+                        <ul style="color: #666; font-size: 14px;">
+                            <li>Set up your MT5 account connection</li>
+                            <li>Configure your trading preferences</li>
+                            <li>Select trading symbols</li>
+                            <li>Start your automated trading bot</li>
+                        </ul>
+                        <p style="margin-top: 20px; color: #999; font-size: 12px;">If you did not create this account or have any questions, please contact our support team.</p>
+                    </div>
+                    <div class="footer">
+                        <p style="margin: 0;">📊 DababyBot Trading Platform | Automated Trading & Analytics</p>
+                        <p style="margin-top: 10px; color: #999;">This is an automated notification. Please do not reply to this email.</p>
+                    </div>
+                </div>
             </body>
             </html>
             """
@@ -604,15 +637,15 @@ def register():
         'message': 'User registered successfully.'
     }
     if subscription_plan != 'free':
-        response['message'] = 'User registered successfully. Subscription code has been sent to your email.'
         response['subscription_code'] = subscription_code
+        if email_sent:
+            response['message'] = 'User registered successfully. Subscription code has been sent to your email.'
+        else:
+            response['message'] = 'User registered successfully. Subscription code is available below because email delivery is not configured.'
     else:
         response['message'] = 'User registered successfully on the Free plan.'
 
-    if email_sent:
-        response['email_status'] = 'sent'
-    else:
-        response['email_status'] = 'skipped'
+    response['email_status'] = 'sent' if email_sent else 'skipped'
 
     return jsonify(response), 201
 

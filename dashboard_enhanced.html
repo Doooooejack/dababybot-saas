@@ -1395,7 +1395,11 @@
                         if (data.subscription_code) {
                             codeDisplay = '<div class="info" style="margin-top:10px; padding:14px; border-radius:8px; background: rgba(77,166,255,0.08); border: 1px solid #4da6ff; color: #e5f5ff;">Your subscription code: <strong>' + data.subscription_code + '</strong></div>';
                         }
-                        msgDiv.innerHTML = '<div class="success">✅ Registered for the ' + subscription_plan.toUpperCase() + ' plan. Check your email for the subscription code.</div>' + codeDisplay;
+                        let emailNote = '';
+                        if (data.email_status === 'skipped') {
+                            emailNote = '<div class="notice" style="margin-top:10px; padding:14px; border-radius:8px; background:#fff4e5; border:1px solid #ffb74d; color:#664400;">⚠️ Email delivery is not configured on this server, so your code is shown here instead.</div>';
+                        }
+                        msgDiv.innerHTML = '<div class="success">✅ Registered for the ' + subscription_plan.toUpperCase() + ' plan.</div>' + codeDisplay + emailNote;
                     }
                     // Switch to login tab after 2 seconds
                     setTimeout(() => {
@@ -1489,8 +1493,8 @@
                 });
                 const user = await res.json();
                 
-                document.getElementById('user-name').textContent = user.username;
-                document.getElementById('user-plan').textContent = user.subscription_plan.toUpperCase();
+                document.getElementById('user-name').textContent = user.username || 'Unknown User';
+                document.getElementById('user-plan').textContent = (user.subscription_plan || 'FREE').toUpperCase();
                 
                 showTab('dashboard-section', null);
                 loadStats();
@@ -1530,7 +1534,7 @@
                     // Show active subscription
                     inactiveDiv.style.display = 'none';
                     activeDiv.style.display = 'block';
-                    document.getElementById('sub-plan-display').textContent = sub.subscription_plan;
+                    document.getElementById('sub-plan-display').textContent = sub.subscription_plan || 'FREE';
                     document.getElementById('sub-expiry-display').textContent = new Date(sub.subscription_expiry).toLocaleDateString();
                     document.getElementById('sub-days-display').textContent = sub.days_remaining + ' days';
                     document.getElementById('sub-symbols-display').textContent = sub.max_symbols;

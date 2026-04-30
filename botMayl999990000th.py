@@ -3489,6 +3489,43 @@ def send_signal_to_all_channels(subject, body, symbol=None, bypass_cooldown=Fals
     except Exception as e:
         print(f"[SIGNAL] Telegram error: {e}")
 
+def get_email_template(title, content_html, action_text=None, action_url=None):
+    """Generate professional HTML email template"""
+    return f"""
+    <html>
+    <head>
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; }}
+            .email-container {{ max-width: 600px; margin: 0 auto; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
+            .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px 20px; text-align: center; }}
+            .header h1 {{ margin: 0; font-size: 24px; font-weight: 600; }}
+            .content {{ padding: 30px 20px; color: #333; line-height: 1.6; }}
+            .info-box {{ background: #f8f9fa; border-left: 4px solid #667eea; padding: 15px; margin: 15px 0; border-radius: 4px; }}
+            .info-label {{ font-weight: 600; color: #667eea; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }}
+            .info-value {{ font-size: 18px; color: #333; margin-top: 5px; font-weight: 500; }}
+            .action-btn {{ display: inline-block; background: #667eea; color: white; padding: 12px 30px; border-radius: 6px; text-decoration: none; font-weight: 600; margin-top: 20px; }}
+            .footer {{ background: #f8f9fa; padding: 20px; text-align: center; color: #666; font-size: 12px; border-top: 1px solid #eee; }}
+            .footer a {{ color: #667eea; text-decoration: none; }}
+        </style>
+    </head>
+    <body>
+        <div class="email-container">
+            <div class="header">
+                <h1>{title}</h1>
+            </div>
+            <div class="content">
+                {content_html}
+                {f'<a href="{action_url}" class="action-btn">{action_text}</a>' if action_text and action_url else ''}
+            </div>
+            <div class="footer">
+                <p>📊 DababyBot Trading Platform | Automated Trading & Analytics</p>
+                <p style="margin-top: 10px; color: #999;">This is an automated notification. Please do not reply to this email.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
 def send_email_signal(subject, body):
     """Send email notification with trade signals to all recipients."""
     global EMAIL_FROM, EMAIL_TO, EMAIL_PASSWORD
@@ -3505,9 +3542,11 @@ def send_email_signal(subject, body):
         print(f"[EMAIL ERROR] Missing credentials: from={from_addr}, to={to_addrs}, pwd={bool(password)}")
         return
     
-    msg = MIMEText(body)
+    # Create professional HTML email
+    html_content = get_email_template(subject, f"<p>{body}</p>")
+    msg = MIMEText(html_content, 'html')
     msg["Subject"] = subject
-    msg["From"] = f"DababybotV8 <{from_addr}>"
+    msg["From"] = f"DababyBot <{from_addr}>"
     msg["To"] = ", ".join(to_addrs)
 
     try:
@@ -15778,17 +15817,30 @@ PAUSE_ON_LOSS_THRESHOLD = getattr(config, 'PAUSE_ON_LOSS_THRESHOLD', 50.0) if co
 import smtplib
 from email.mime.text import MIMEText
 
-def send_email(subject, body, to_email, from_email, smtp_server, smtp_port, smtp_user, smtp_password):
-    msg = MIMEText(body)
+def send_email(subject, body, to_email, from_email, smtp_server, smtp_port, smtp_user, smtp_password, html=False):
+    """Send professional email with optional HTML formatting"""
+    if not to_email or not from_email or not smtp_user or not smtp_password:
+        print(f"[EMAIL ERROR] Missing email credentials")
+        return
+    
+    # Create HTML email if not already HTML
+    if not html:
+        html_content = get_email_template(subject, f"<p>{body.replace(chr(10), '<br>')}</p>")
+        msg = MIMEText(html_content, 'html')
+    else:
+        msg = MIMEText(body, 'html')
+    
     msg["Subject"] = subject
-    msg["From"] = from_email
+    msg["From"] = f"DababyBot <{from_email}>"
     msg["To"] = to_email
+    
     try:
-        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+        with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30) as server:
             server.login(smtp_user, smtp_password)
             server.sendmail(from_email, [to_email], msg.as_string())
+            print(f"[EMAIL] ✓ Email sent to {to_email}")
     except Exception as e:
-        print(f"[EMAIL ERROR] {e}")
+        print(f"[EMAIL ERROR] Failed to send email: {e}")
 
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17405,18 +17457,44 @@ def place_sniper_entry(symbol, direction, entry_price, sl, tp, lot=SNIPER_MAX_LO
                     record_symbol_session_trade(symbol, session_name)
                 except Exception:
                     pass
-                subject = f"Trade Entry Opened: {symbol} {direction.upper()}"
-                body = (
-                    f"Entry opened:\n"
-                    f"Symbol: {symbol}\n"
-                    f"Direction: {direction}\n"
-                    f"Entry Price: {entry_price}\n"
-                    f"SL: {sl}\n"
-                    f"TP: {tp}\n"
-                    f"Lot: {lot}\n"
-                    f"Pattern: {pattern_name if pattern_name else 'N/A'}\n"
-                    f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-                )
+                subject = f"📈 Trade Entry: {symbol} {direction.upper()}"
+                current_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+                direction_color = '#27ae60' if direction.lower() == 'buy' else '#e74c3c'
+                direction_emoji = '🟢 BUY' if direction.lower() == 'buy' else '🔴 SELL'
+                html_body = f"""
+                <div class="info-box" style="border-left-color: {direction_color};">
+                    <div class="info-label">Direction</div>
+                    <div class="info-value">{direction_emoji}</div>
+                </div>
+                <div class="info-box">
+                    <div class="info-label">Symbol</div>
+                    <div class="info-value">{symbol}</div>
+                </div>
+                <div class="info-box">
+                    <div class="info-label">Entry Price</div>
+                    <div class="info-value">{entry_price}</div>
+                </div>
+                <table style="width: 100%; border-collapse: collapse; margin-top: 15px;">
+                    <tr style="border-bottom: 1px solid #eee;">
+                        <td style="padding: 12px 0; color: #666;"><strong>Stop Loss:</strong></td>
+                        <td style="padding: 12px 0; text-align: right; color: #e74c3c;"><strong>{sl}</strong></td>
+                    </tr>
+                    <tr style="border-bottom: 1px solid #eee;">
+                        <td style="padding: 12px 0; color: #666;"><strong>Take Profit:</strong></td>
+                        <td style="padding: 12px 0; text-align: right; color: #27ae60;"><strong>{tp}</strong></td>
+                    </tr>
+                    <tr style="border-bottom: 1px solid #eee;">
+                        <td style="padding: 12px 0; color: #666;"><strong>Lot Size:</strong></td>
+                        <td style="padding: 12px 0; text-align: right;">{lot}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 12px 0; color: #666;"><strong>Pattern:</strong></td>
+                        <td style="padding: 12px 0; text-align: right;">{pattern_name if pattern_name else 'N/A'}</td>
+                    </tr>
+                </table>
+                <p style="color: #999; font-size: 12px; margin-top: 20px; text-align: center;">⏰ {current_time}</p>
+                """
+                body = html_body
                 send_email(
                     subject,
                     body,
@@ -20244,24 +20322,42 @@ def check_and_notify_symbol_profit(threshold_points=175):
 
         # If total points exceeds threshold and hasn't been notified yet
         if total_points >= threshold_points and symbol not in NOTIFIED_SYMBOLS:
-            subject = f"🚀 {symbol} now +{int(total_points)} points total profit"
-            body = (
-                f"Symbol: {symbol}\n"
-                f"Number of positions: {len(pos_list)}\n"
-                f"Total profit (points): {int(total_points)}\n"
-                f"Total profit (USD): {total_profit_usd:.2f}\n"
-                f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-            )
+            subject = f"� {symbol} Milestone: +{int(total_points)} Points Profit"
+            current_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+            html_body = f"""
+            <div class="info-box">
+                <div class="info-label">Symbol</div>
+                <div class="info-value" style="color: #27ae60;">{symbol}</div>
+            </div>
+            <div class="info-box">
+                <div class="info-label">Positions</div>
+                <div class="info-value">{len(pos_list)} active</div>
+            </div>
+            <table style="width: 100%; border-collapse: collapse; margin-top: 15px;">
+                <tr style="border-bottom: 1px solid #eee;">
+                    <td style="padding: 12px 0; color: #666;"><strong>Total Profit (Points):</strong></td>
+                    <td style="padding: 12px 0; text-align: right; color: #27ae60;"><strong>+{int(total_points)}</strong></td>
+                </tr>
+                <tr>
+                    <td style="padding: 12px 0; color: #666;"><strong>Total Profit (USD):</strong></td>
+                    <td style="padding: 12px 0; text-align: right; color: #27ae60;"><strong>${total_profit_usd:.2f}</strong></td>
+                </tr>
+            </table>
+            <p style="color: #999; font-size: 12px; margin-top: 20px; text-align: center;">⏰ {current_time}</p>
+            <p style="margin-top: 20px; padding: 15px; background: #f0f8ff; border-radius: 6px; color: #333;">🎯 <strong>Keep up the great trading!</strong> Your strategy is performing well. Continue monitoring your positions and adjust risk management as needed.</p>
+            """
             try:
+                html_template = get_email_template(subject, html_body)
                 send_email(
                     subject,
-                    body,
+                    html_template,
                     to_email=(getattr(config, 'NOTIFY_EMAIL', None) if config is not None else None),
                     from_email=(getattr(config, 'SMTP_USER', None) if config is not None else None),
                     smtp_server=(getattr(config, 'SMTP_SERVER', 'smtp.example.com') if config is not None else 'smtp.example.com'),
                     smtp_port=(getattr(config, 'SMTP_PORT', 465) if config is not None else 465),
                     smtp_user=(getattr(config, 'SMTP_USER', None) if config is not None else None),
-                    smtp_password=(getattr(config, 'SMTP_PASSWORD', None) if config is not None else None)
+                    smtp_password=(getattr(config, 'SMTP_PASSWORD', None) if config is not None else None),
+                    html=True
                 )
                 print(f"[EMAIL] Profit notification sent for {symbol}")
                 NOTIFIED_SYMBOLS.add(symbol)
