@@ -456,36 +456,61 @@ def register():
     db.session.add(user)
     db.session.commit()
 
-    # Send activation email
+    # Send activation email only if SMTP is configured.
+    email_sent = False
     try:
-        from email.mime.text import MIMEText
-        import smtplib
-        EMAIL_FROM = "malikukuti@gmail.com"  # Update as needed
-        EMAIL_PASSWORD = "qyyrpabxxtwygqto"  # Update as needed
-        subject = "Activate your DababyBot Account"
-        body = f"""
-        <html>
-        <body style='font-family:Segoe UI,Arial,sans-serif;'>
-        <h2 style='color:#4da6ff;'>Welcome to DababyBot!</h2>
-        <p>Hi <b>{username}</b>,</p>
-        <p>Thank you for registering. Please use the activation code below to activate your account:</p>
-        <div style='background:#f4f4f4;padding:18px 24px;border-radius:8px;font-size:1.3em;color:#222;letter-spacing:2px;width:max-content;margin:18px auto 18px auto;border-left:5px solid #4da6ff;'><b>{activation_code}</b></div>
-        <p>If you did not request this, please ignore this email.</p>
-        <p style='color:#aaa;font-size:0.95em;'>DababyBot Team</p>
-        </body>
-        </html>
-        """
-        msg = MIMEText(body, 'html')
-        msg["Subject"] = subject
-        msg["From"] = f"DababyBot <{EMAIL_FROM}>"
-        msg["To"] = email
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=30) as server:
-            server.login(EMAIL_FROM, EMAIL_PASSWORD)
-            server.sendmail(EMAIL_FROM, [email], msg.as_string())
-    except Exception as e:
-        print("[EMAIL ERROR]", e)
+        EMAIL_FROM = os.getenv('EMAIL_FROM', '').strip()
+        EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD', '').strip()
+        SMTP_HOST = os.getenv('SMTP_HOST', 'smtp.gmail.com').strip()
+        SMTP_PORT_STR = os.getenv('SMTP_PORT', '465').strip()
+        
+        # Only attempt email if we have valid credentials
+        if EMAIL_FROM and EMAIL_PASSWORD and SMTP_HOST:
+            try:
+                SMTP_PORT = int(SMTP_PORT_STR)
+            except ValueError:
+                SMTP_PORT = 465
+            
+            from email.mime.text import MIMEText
+            import smtplib
 
-    return jsonify({'message': 'User registered successfully. Please check your email for your activation code.'}), 201
+            subject = "Activate your DababyBot Account"
+            body = f"""
+            <html>
+            <body style='font-family:Segoe UI,Arial,sans-serif;'>
+            <h2 style='color:#4da6ff;'>Welcome to DababyBot!</h2>
+            <p>Hi <b>{username}</b>,</p>
+            <p>Thank you for registering. Please use the activation code below to activate your account:</p>
+            <div style='background:#f4f4f4;padding:18px 24px;border-radius:8px;font-size:1.3em;color:#222;letter-spacing:2px;width:max-content;margin:18px auto 18px auto;border-left:5px solid #4da6ff;'><b>{activation_code}</b></div>
+            <p>If you did not request this, please ignore this email.</p>
+            <p style='color:#aaa;font-size:0.95em;'>DababyBot Team</p>
+            </body>
+            </html>
+            """
+            msg = MIMEText(body, 'html')
+            msg["Subject"] = subject
+            msg["From"] = f"DababyBot <{EMAIL_FROM}>"
+            msg["To"] = email
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30) as server:
+                server.login(EMAIL_FROM, EMAIL_PASSWORD)
+                server.sendmail(EMAIL_FROM, [email], msg.as_string())
+            email_sent = True
+        else:
+            print("[EMAIL INFO] SMTP credentials are not configured; skipping email delivery for registration.")
+    except Exception as e:
+        print(f"[EMAIL ERROR] Failed to send activation email: {e}")
+        # Don't fail registration due to email issues
+
+    response = {
+        'message': 'User registered successfully. Activation code has been generated.'
+    }
+    if email_sent:
+        response['email_status'] = 'sent'
+    else:
+        response['email_status'] = 'skipped'
+        response['activation_code'] = activation_code
+
+    return jsonify(response), 201
 
 
 @app.route('/api/auth/login', methods=['POST'])
