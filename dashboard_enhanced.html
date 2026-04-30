@@ -874,17 +874,18 @@
                 <option value="Other">Other</option>
             </select>
 
+            <label for="reg-plan">Choose Subscription Plan</label>
+            <select id="reg-plan">
+                <option value="free">Free — Basic access</option>
+                <option value="pro">Pro — 5 symbols / 24/7 bot</option>
+                <option value="elite">Elite — 20 symbols / priority support</option>
+                <option value="premium">Premium — 50 symbols / enterprise</option>
+            </select>
+
             <label for="reg-password">Password</label>
             <input type="password" id="reg-password" placeholder="Secure password (8+ characters)">
 
             <button class="success" onclick="register()">✨ Create Account</button>
-
-            <div id="activation-section" style="display:none; margin-top:24px;">
-                <label for="activation-code">Activation Code</label>
-                <input type="text" id="activation-code" placeholder="Enter the code sent to your email">
-                <button class="success" onclick="activateAccount()">🔓 Activate Account</button>
-                <div id="activation-msg"></div>
-            </div>
         </div>
         
         <!-- LOGIN SECTION -->
@@ -911,12 +912,28 @@
             
             <!-- SUBSCRIPTION KEY SECTION -->
             <div id="subscription-section" style="background: linear-gradient(135deg, #1a3a4a 0%, #0a2a3a 100%); padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #ffa94d;">
-                <h3 style="margin-top: 0; color: #ffa94d;">🔑 Subscription Required</h3>
+                <h3 style="margin-top: 0; color: #ffa94d;">🔑 Subscription & Premium Access</h3>
                 <div id="subscription-status-msg"></div>
                 
                 <div id="subscription-inactive" style="display: block;">
-                    <p style="color: #888; margin-bottom: 15px;">Enter your subscription key to unlock the trading bot and access premium features.</p>
-                    <label><strong>Enter Subscription Key:</strong></label>
+                    <p style="color: #888; margin-bottom: 15px;">You have a <strong>FREE</strong> plan. Unlock premium features with your subscription code.</p>
+                    
+                    <!-- SUBSCRIPTION CODE FROM EMAIL -->
+                    <div style="background: rgba(77, 166, 255, 0.1); padding: 15px; border-radius: 6px; margin-bottom: 25px; border-left: 3px solid #4da6ff;">
+                        <h4 style="color: #4da6ff; margin-top: 0; margin-bottom: 10px;">📧 Use Your Subscription Code</h4>
+                        <p style="color: #aaa; font-size: 0.9rem; margin-bottom: 12px;">Enter the 6-digit code sent to your email when you registered:</p>
+                        <label><strong>Subscription Code:</strong></label>
+                        <input type="text" id="subscription-code-input" placeholder="Enter 6-digit code" maxlength="6" style="letter-spacing: 1px; text-align: center;">
+                        <button class="success" onclick="activateSubscriptionCode()" style="margin-top: 10px;">✅ Activate Subscription</button>
+                        <div id="subscription-code-msg" style="margin-top: 10px;"></div>
+                    </div>
+                    
+                    <!-- OR BUY PLAN OPTION -->
+                    <hr style="border: none; border-top: 1px solid #3a4a5a; margin: 20px 0;">
+                    
+                    <h4 style="color: #ffa94d; margin-bottom: 12px;">💳 Or Purchase a Plan</h4>
+                    <p style="color: #888; margin-bottom: 15px;">Don't have a code? Purchase a subscription plan to unlock all features:</p>
+                    <label><strong>Enter License/Subscription Key:</strong></label>
                     <input type="text" id="subscription-key-input" placeholder="DABABYBOT-PLAN-XXXX-XXXX" style="font-family: monospace; letter-spacing: 2px;">
                     <button class="success" onclick="activateSubscriptionKey()">✅ Activate Subscription</button>
                     
@@ -1327,11 +1344,12 @@
             const password = document.getElementById('reg-password').value;
             const phone = document.getElementById('reg-phone').value.trim();
             const country = document.getElementById('reg-country').value;
+            const subscription_plan = document.getElementById('reg-plan').value;
             const msgDiv = document.getElementById('register-msg');
 
             // Basic validation
-            if (!username || !email || !password || !phone || !country) {
-                msgDiv.innerHTML = '<div class="error">❌ Please fill all fields</div>';
+            if (!username || !email || !password || !phone || !country || !subscription_plan) {
+                msgDiv.innerHTML = '<div class="error">❌ Please fill all fields and select a subscription plan</div>';
                 btn.disabled = false;
                 return;
             }
@@ -1363,15 +1381,26 @@
                 const res = await fetch('/api/auth/register', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username, email, password, phone, country })
+                    body: JSON.stringify({ username, email, password, phone, country, subscription_plan })
                 });
                 const data = await res.json();
 
                 if (res.ok) {
-                    // Store username for activation step
+                    // Store username for subscription code activation later
                     registeredUsername = username;
-                    msgDiv.innerHTML = '<div class="success">✅ Registration successful! Please check your email for your activation code.</div>';
-                    document.getElementById('activation-section').style.display = 'block';
+                    if (subscription_plan === 'free') {
+                        msgDiv.innerHTML = '<div class="success">✅ Registered on Free plan. You can now log in.</div>';
+                    } else {
+                        let codeDisplay = '';
+                        if (data.subscription_code) {
+                            codeDisplay = '<div class="info" style="margin-top:10px; padding:14px; border-radius:8px; background: rgba(77,166,255,0.08); border: 1px solid #4da6ff; color: #e5f5ff;">Your subscription code: <strong>' + data.subscription_code + '</strong></div>';
+                        }
+                        msgDiv.innerHTML = '<div class="success">✅ Registered for the ' + subscription_plan.toUpperCase() + ' plan. Check your email for the subscription code.</div>' + codeDisplay;
+                    }
+                    // Switch to login tab after 2 seconds
+                    setTimeout(() => {
+                        showTab('login-section', new Event('click'));
+                    }, 2000);
                 } else {
                     msgDiv.innerHTML = '<div class="error">❌ ' + (data.error || 'Registration failed') + '</div>';
                 }
@@ -1381,37 +1410,40 @@
             btn.disabled = false;
         }
         
-        async function activateAccount() {
-            const username = registeredUsername;
-            const code = document.getElementById('activation-code').value.trim();
-            const msgDiv = document.getElementById('activation-msg');
+        async function activateSubscriptionCode() {
+            const username = registeredUsername || document.getElementById('user-name').textContent;
+            const code = document.getElementById('subscription-code-input').value.trim();
+            const msgDiv = document.getElementById('subscription-code-msg');
             
             if (!code) {
-                msgDiv.innerHTML = '<div class="error">❌ Please enter your activation code</div>';
+                msgDiv.innerHTML = '<div class="error">❌ Please enter your subscription code</div>';
                 return;
             }
             
             if (!username) {
-                msgDiv.innerHTML = '<div class="error">❌ Please register first before activating</div>';
+                msgDiv.innerHTML = '<div class="error">❌ Please log in first</div>';
                 return;
             }
             
             try {
-                const res = await fetch('/api/auth/activate', {
+                const token = localStorage.getItem('authToken');
+                const res = await fetch('/api/auth/activate-subscription', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
                     body: JSON.stringify({ username, code })
                 });
                 const data = await res.json();
                 if (res.ok) {
-                    msgDiv.innerHTML = '<div class="success">✅ Account activated! You can now log in.</div>';
-                    // Clear activation section after 2 seconds
+                    msgDiv.innerHTML = '<div class="success">✅ Subscription activated! You now have access to premium features.</div>';
+                    // Refresh dashboard to show subscription status
                     setTimeout(() => {
-                        document.getElementById('activation-section').style.display = 'none';
-                        document.getElementById('activation-code').value = '';
-                    }, 2000);
+                        loadDashboard();
+                    }, 1500);
                 } else {
-                    msgDiv.innerHTML = '<div class="error">❌ ' + (data.error || 'Activation failed') + '</div>';
+                    msgDiv.innerHTML = '<div class="error">❌ ' + (data.error || 'Invalid subscription code') + '</div>';
                 }
             } catch (err) {
                 msgDiv.innerHTML = '<div class="error">❌ Network error</div>';

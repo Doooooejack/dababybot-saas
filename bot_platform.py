@@ -8,6 +8,7 @@ from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from sqlalchemy import inspect, text
 from werkzeug.security import generate_password_hash, check_password_hash
 import subprocess
 import threading
@@ -157,6 +158,67 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
 
+schema_migrated = False
+
+def migrate_user_schema():
+    global schema_migrated
+    if schema_migrated:
+        logger.debug('User schema already migrated; skipping.')
+        return
+    inspector = inspect(db.engine)
+    if 'users' not in inspector.get_table_names():
+        db.create_all()
+        logger.info('Created fresh database schema for users and related tables.')
+        schema_migrated = True
+        return
+
+    existing_columns = {col['name'] for col in inspector.get_columns('users')}
+    alter_statements = []
+    patched_columns = []
+
+    if 'phone' not in existing_columns:
+        alter_statements.append("ALTER TABLE users ADD COLUMN phone VARCHAR(32)")
+        patched_columns.append('phone')
+    if 'country' not in existing_columns:
+        alter_statements.append("ALTER TABLE users ADD COLUMN country VARCHAR(64) DEFAULT ''")
+        patched_columns.append('country')
+    if 'subscription_code' not in existing_columns:
+        alter_statements.append("ALTER TABLE users ADD COLUMN subscription_code VARCHAR(16)")
+        patched_columns.append('subscription_code')
+    if 'is_active' not in existing_columns:
+        alter_statements.append("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1")
+        patched_columns.append('is_active')
+    if 'mt5_validated' not in existing_columns:
+        alter_statements.append("ALTER TABLE users ADD COLUMN mt5_validated BOOLEAN DEFAULT 0")
+        patched_columns.append('mt5_validated')
+    if 'subscription_key' not in existing_columns:
+        alter_statements.append("ALTER TABLE users ADD COLUMN subscription_key VARCHAR(100)")
+        patched_columns.append('subscription_key')
+    if 'subscription_key_verified' not in existing_columns:
+        alter_statements.append("ALTER TABLE users ADD COLUMN subscription_key_verified BOOLEAN DEFAULT 0")
+        patched_columns.append('subscription_key_verified')
+    if 'subscription_expiry' not in existing_columns:
+        alter_statements.append("ALTER TABLE users ADD COLUMN subscription_expiry DATETIME")
+        patched_columns.append('subscription_expiry')
+    if 'key_activated_at' not in existing_columns:
+        alter_statements.append("ALTER TABLE users ADD COLUMN key_activated_at DATETIME")
+        patched_columns.append('key_activated_at')
+    if 'max_symbols' not in existing_columns:
+        alter_statements.append("ALTER TABLE users ADD COLUMN max_symbols INTEGER DEFAULT 1")
+        patched_columns.append('max_symbols')
+
+    if alter_statements:
+        logger.info(f"Migrating users table; adding columns: {', '.join(patched_columns)}")
+        with db.engine.connect() as conn:
+            for stmt in alter_statements:
+                conn.execute(text(stmt))
+            conn.commit()
+        logger.info('User schema migration completed successfully.')
+    else:
+        logger.info('User schema is already up to date; no changes applied.')
+
+    schema_migrated = True
+
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -176,8 +238,8 @@ class User(db.Model):
     phone = db.Column(db.String(32), unique=True, nullable=False)
     country = db.Column(db.String(64), nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
-    activation_code = db.Column(db.String(16), nullable=True)
-    is_active = db.Column(db.Boolean, default=False)
+    subscription_code = db.Column(db.String(16), nullable=True)
+    is_active = db.Column(db.Boolean, default=True)
     
     # MT5 Credentials (encrypted in production)
     mt5_server = db.Column(db.String(100))
@@ -387,23 +449,32 @@ def mt5_sync():
     return jsonify({'message': 'MT5 account info synced'}), 200
 
 @app.route('/api/auth/activate', methods=['POST'])
-def activate_account():
+@app.route('/api/auth/activate-subscription', methods=['POST'])
+def activate_subscription():
+    """Activate subscription with subscription code"""
     data = request.get_json()
     username = data.get('username')
     code = data.get('code')
     if not username or not code:
-        return jsonify({'error': 'Username and activation code required'}), 400
+        return jsonify({'error': 'Username and subscription code required'}), 400
     user = User.query.filter_by(username=username).first()
     if not user:
         return jsonify({'error': 'User not found'}), 404
-    if user.is_active:
-        return jsonify({'error': 'Account already activated'}), 400
-    if user.activation_code != code:
-        return jsonify({'error': 'Invalid activation code'}), 400
-    user.is_active = True
-    user.activation_code = None
+    if user.subscription_code != code:
+        return jsonify({'error': 'Invalid subscription code'}), 400
+    user.subscription_key_verified = True
+    user.subscription_active = True
+    user.subscription_code = None
+    user.key_activated_at = datetime.utcnow()
+    user.max_symbols = 1
+    if user.subscription_plan == 'pro':
+        user.max_symbols = 5
+    elif user.subscription_plan == 'elite':
+        user.max_symbols = 20
+    elif user.subscription_plan == 'premium':
+        user.max_symbols = 50
     db.session.commit()
-    return jsonify({'message': 'Account activated successfully'}), 200
+    return jsonify({'message': 'Subscription activated successfully', 'plan': user.subscription_plan}), 200
 
 @app.route('/api/auth/register', methods=['POST'])
 def register():
@@ -414,10 +485,15 @@ def register():
     password = data.get('password')
     phone = data.get('phone')
     country = data.get('country')
+    subscription_plan = data.get('subscription_plan', 'free').lower()
 
     # Basic validation
     if not username or not email or not password or not phone or not country:
         return jsonify({'error': 'All fields are required'}), 400
+
+    allowed_plans = ['free', 'pro', 'elite', 'premium']
+    if subscription_plan not in allowed_plans:
+        return jsonify({'error': 'Invalid subscription plan selected'}), 400
 
     # Email format validation
     import re
@@ -441,16 +517,26 @@ def register():
         return jsonify({'error': 'Phone number already exists'}), 409
 
     import random
-    activation_code = str(random.randint(100000, 999999))
+    subscription_code = None
+    subscription_active = False
+    subscription_key_verified = False
+
+    if subscription_plan == 'free':
+        subscription_active = True
+        subscription_key_verified = True
+    else:
+        subscription_code = str(random.randint(100000, 999999))
 
     user = User(
         username=username,
         email=email,
         phone=phone,
         country=country,
-        is_active=False,
-        activation_code=activation_code,
-        subscription_plan='free'
+        is_active=True,
+        subscription_code=subscription_code,
+        subscription_plan=subscription_plan,
+        subscription_active=subscription_active,
+        subscription_key_verified=subscription_key_verified
     )
     user.set_password(password)
     db.session.add(user)
@@ -474,14 +560,27 @@ def register():
             from email.mime.text import MIMEText
             import smtplib
 
-            subject = "Activate your DababyBot Account"
+            if subscription_plan == 'free':
+                subject = "Welcome to DababyBot Free Plan"
+                plan_label = 'Free'
+                code_html = ''
+                code_message = '<p>No subscription code is required for the Free plan.</p>'
+            else:
+                subject = f"Your DababyBot {subscription_plan.capitalize()} Subscription Code"
+                plan_label = subscription_plan.capitalize()
+                code_html = f"""
+                <div style='background:#f4f4f4;padding:18px 24px;border-radius:8px;font-size:1.3em;color:#222;letter-spacing:2px;width:max-content;margin:18px auto 18px auto;border-left:5px solid #4da6ff;'><b>{subscription_code}</b></div>
+                """
+                code_message = '<p>Enter this code in the subscription section of your dashboard to activate your subscription.</p>'
+
             body = f"""
             <html>
             <body style='font-family:Segoe UI,Arial,sans-serif;'>
             <h2 style='color:#4da6ff;'>Welcome to DababyBot!</h2>
             <p>Hi <b>{username}</b>,</p>
-            <p>Thank you for registering. Please use the activation code below to activate your account:</p>
-            <div style='background:#f4f4f4;padding:18px 24px;border-radius:8px;font-size:1.3em;color:#222;letter-spacing:2px;width:max-content;margin:18px auto 18px auto;border-left:5px solid #4da6ff;'><b>{activation_code}</b></div>
+            <p>Thank you for registering for the <strong>{plan_label}</strong> plan.</p>
+            {code_html}
+            {code_message}
             <p>If you did not request this, please ignore this email.</p>
             <p style='color:#aaa;font-size:0.95em;'>DababyBot Team</p>
             </body>
@@ -502,13 +601,18 @@ def register():
         # Don't fail registration due to email issues
 
     response = {
-        'message': 'User registered successfully. Activation code has been generated.'
+        'message': 'User registered successfully.'
     }
+    if subscription_plan != 'free':
+        response['message'] = 'User registered successfully. Subscription code has been sent to your email.'
+        response['subscription_code'] = subscription_code
+    else:
+        response['message'] = 'User registered successfully on the Free plan.'
+
     if email_sent:
         response['email_status'] = 'sent'
     else:
         response['email_status'] = 'skipped'
-        response['activation_code'] = activation_code
 
     return jsonify(response), 201
 
@@ -1968,9 +2072,10 @@ def dashboard():
             <h1>🤖 DababyBot SaaS Trading Platform</h1>
             
             <div class="tab">
-                <button class="tab-btn active" onclick="showTab('register')">Register</button>
-                <button class="tab-btn" onclick="showTab('login')">Login</button>
-                <button class="tab-btn" onclick="showTab('dashboard')">Dashboard</button>
+                <button class="tab-btn active" onclick="showTab('register', event)">Register</button>
+                <button class="tab-btn" onclick="showTab('login', event)">Login</button>
+                <button class="tab-btn" onclick="showTab('activate', event)">Activate</button>
+                <button class="tab-btn" onclick="showTab('dashboard', event)">Dashboard</button>
             </div>
             
 <!-- REGISTER SECTION - FIXED -->
@@ -1979,10 +2084,18 @@ def dashboard():
                 <div id="register-msg"></div>
                 <input type="text" id="reg-username" placeholder="Username (no spaces)" maxlength="20">
                 <input type="email" id="reg-email" placeholder="your@email.com">
+                <input type="text" id="reg-phone" placeholder="Phone (e.g. +1234567890)">
+                <input type="text" id="reg-country" placeholder="Country (e.g. US)">
+                <select id="reg-plan">
+                    <option value="free">Free plan</option>
+                    <option value="pro">Pro plan</option>
+                    <option value="elite">Elite plan</option>
+                    <option value="premium">Premium plan</option>
+                </select>
                 <input type="password" id="reg-password" placeholder="Password (8+ chars)" minlength="8">
                 <button class="success" onclick="registerFixed()" style="width:100%; padding:15px; font-size:1.1rem;">✨ Create Account</button>
                 <p style="text-align:center; color:#aaa; font-size:0.9rem; margin-top:10px;">
-                    Have account? <a href="#" onclick="showTab('login')" style="color:#4da6ff;">Login →</a>
+                    Have account? <a href="#" onclick="showTab('login', event)" style="color:#4da6ff;">Login →</a>
                 </p>
             </div>
             
@@ -1993,6 +2106,18 @@ def dashboard():
                 <input type="text" id="login-username" placeholder="Username">
                 <input type="password" id="login-password" placeholder="Password">
                 <button onclick="login()">Login</button>
+            </div>
+
+            <!-- ACTIVATE SECTION -->
+            <div id="activate" class="card hidden">
+                <h2>Activate Subscription</h2>
+                <div id="activate-msg"></div>
+                <input type="text" id="activate-username" placeholder="Username">
+                <input type="text" id="activate-code" placeholder="Subscription code">
+                <button onclick="activateSubscriptionCode()">Activate</button>
+                <p style="text-align:center; color:#aaa; font-size:0.9rem; margin-top:10px;">
+                    Back to <a href="#" onclick="showTab('login', event)" style="color:#4da6ff;">Login</a>
+                </p>
             </div>
             
             <!-- DASHBOARD SECTION (Hidden until logged in) -->
@@ -2256,57 +2381,78 @@ def dashboard():
         <script>
             let authToken = localStorage.getItem('auth_token');
             
-            function showTab(tab) {
+            function showTab(tab, event) {
                 document.querySelectorAll('.card').forEach(el => el.classList.add('hidden'));
                 document.getElementById(tab).classList.remove('hidden');
                 document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
-                event.target.classList.add('active');
+                const target = event ? event.target : window.event && window.event.target;
+                if (target && target.classList.contains('tab-btn')) {
+                    target.classList.add('active');
+                }
             }
             
 async function registerFixed() {
                 console.log('🔥 Register clicked!');
                 const username = document.getElementById('reg-username').value.trim();
                 const email = document.getElementById('reg-email').value.trim();
+                const phone = document.getElementById('reg-phone').value.trim();
+                const country = document.getElementById('reg-country').value.trim();
+                const plan = document.getElementById('reg-plan').value;
                 const password = document.getElementById('reg-password').value;
                 const msgDiv = document.getElementById('register-msg');
                 
                 msgDiv.innerHTML = '';
 
                 if (!username || username.length < 3) {
-                    msgDiv.innerHTML = '<div class="error">❌ Username 3+ chars no spaces</div>';
+                    msgDiv.innerHTML = '<div class="error">❌ Username must be at least 3 characters</div>';
                     return;
                 }
                 if (!email || !email.includes('@')) {
                     msgDiv.innerHTML = '<div class="error">❌ Valid email required</div>';
                     return;
                 }
+                if (!phone || phone.length < 8) {
+                    msgDiv.innerHTML = '<div class="error">❌ Valid phone number required</div>';
+                    return;
+                }
+                if (!country || country.length < 2) {
+                    msgDiv.innerHTML = '<div class="error">❌ Country code required</div>';
+                    return;
+                }
                 if (password.length < 8) {
-                    msgDiv.innerHTML = '<div class="error">❌ Password 8+ chars</div>';
+                    msgDiv.innerHTML = '<div class="error">❌ Password must be at least 8 chars</div>';
                     return;
                 }
                 
-                msgDiv.innerHTML = '<div class="success">⏳ Creating...</div>';
+                msgDiv.innerHTML = '<div class="success">⏳ Creating account...</div>';
                 
                 try {
-                    console.log('Sending:', {username, email});
+                    const payload = { username, email, password, phone, country, subscription_plan: plan };
+                    console.log('Sending registration payload:', payload);
                     const res = await fetch('/api/auth/register', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({username, email, password, phone:'+1234567890', country:'USA'})
+                        body: JSON.stringify(payload)
                     });
                     const data = await res.json();
-                    console.log('Response:', res.status, data);
+                    console.log('Registration response:', res.status, data);
                     
                     if (res.ok) {
-                        msgDiv.innerHTML = '<div class="success">✅ Registered! Login now.</div>';
+                        let successMessage = '<div class="success">✅ Registered successfully.</div>';
+                        if (data.subscription_code) {
+                            successMessage += `<div style="margin-top:10px; font-size:0.95rem;">Subscription code: <strong>${data.subscription_code}</strong></div>`;
+                            successMessage += `<div style="margin-top:6px; font-size:0.9rem; color:#444;">${data.email_status === 'sent' ? 'Code sent via email.' : 'Email skipped locally; use the code shown above.'}</div>`;
+                        }
+                        msgDiv.innerHTML = successMessage;
                         document.getElementById('login-username').value = username;
-                        setTimeout(() => showTab('login'), 1500);
+                        setTimeout(() => showTab('login'), 2200);
                     } else {
-                        msgDiv.innerHTML = '<div class="error">❌ ' + (data.error || 'Error') + '</div>';
+                        const errorMessage = data.error || data.message || 'Registration failed';
+                        msgDiv.innerHTML = `<div class="error">❌ ${errorMessage}</div>`;
                     }
                 } catch (err) {
                     console.error('Network:', err);
-                    msgDiv.innerHTML = '<div class="error">❌ Network error - check F12</div>';
+                    msgDiv.innerHTML = '<div class="error">❌ Network error - open console for details</div>';
                 }
             }
             
@@ -2315,18 +2461,23 @@ async function registerFixed() {
                 const password = document.getElementById('login-password').value;
                 const msgDiv = document.getElementById('login-msg');
                 
+                msgDiv.innerHTML = '';
+
                 if (!username || !password) {
                     msgDiv.innerHTML = '<div class="error">Fill all fields</div>';
                     return;
                 }
                 
                 try {
+                    const payload = { username, password };
+                    console.log('Sending login payload:', { username });
                     const res = await fetch('/api/auth/login', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ username, password })
+                        body: JSON.stringify(payload)
                     });
                     const data = await res.json();
+                    console.log('Login response:', res.status, data);
                     
                     if (res.ok) {
                         localStorage.setItem('auth_token', data.access_token);
@@ -2334,10 +2485,56 @@ async function registerFixed() {
                         authToken = data.access_token;
                         setTimeout(() => loadDashboard(), 1000);
                     } else {
-                        msgDiv.innerHTML = '<div class="error">' + data.error + '</div>';
+                        const errorMessage = data.error || data.message || 'Login failed';
+                        msgDiv.innerHTML = `<div class="error">❌ ${errorMessage}</div>`;
                     }
                 } catch (err) {
-                    msgDiv.innerHTML = '<div class="error">Network error</div>';
+                    console.error('Network login error:', err);
+                    msgDiv.innerHTML = '<div class="error">❌ Network error - open console for details</div>';
+                }
+            }
+
+            async function activateSubscriptionCode() {
+                const username = document.getElementById('activate-username').value.trim();
+                const code = document.getElementById('activate-code').value.trim();
+                const msgDiv = document.getElementById('activate-msg');
+
+                msgDiv.innerHTML = '';
+                if (!username || username.length < 3) {
+                    msgDiv.innerHTML = '<div class="error">❌ Enter your username</div>';
+                    return;
+                }
+                if (!code || code.length < 4) {
+                    msgDiv.innerHTML = '<div class="error">❌ Enter the subscription code</div>';
+                    return;
+                }
+
+                msgDiv.innerHTML = '<div class="success">⏳ Activating subscription...</div>';
+
+                try {
+                    const payload = { username, code };
+                    console.log('Sending activation payload:', payload);
+                    const res = await fetch('/api/auth/activate-subscription', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    const data = await res.json();
+                    console.log('Activation response:', res.status, data);
+
+                    if (res.ok) {
+                        msgDiv.innerHTML = `<div class="success">✅ ${data.message}</div>`;
+                        if (data.plan) {
+                            msgDiv.innerHTML += `<div style="margin-top:8px; font-size:0.95rem;">Plan activated: <strong>${data.plan}</strong></div>`;
+                        }
+                        setTimeout(() => showTab('login'), 2200);
+                    } else {
+                        const errorMessage = data.error || data.message || 'Activation failed';
+                        msgDiv.innerHTML = `<div class="error">❌ ${errorMessage}</div>`;
+                    }
+                } catch (err) {
+                    console.error('Activation network error:', err);
+                    msgDiv.innerHTML = '<div class="error">❌ Network error - open console for details</div>';
                 }
             }
             
@@ -2664,8 +2861,9 @@ async function registerFixed() {
 
 @app.before_request
 def setup_db():
-    """Create tables if they don't exist"""
+    """Create tables and migrate schema if necessary"""
     db.create_all()
+    migrate_user_schema()
 
 
 if __name__ == '__main__':

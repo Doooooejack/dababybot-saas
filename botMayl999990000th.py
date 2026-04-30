@@ -1996,20 +1996,17 @@ for module_name in REQUIRED_MODULES:
         missing_modules.append(module_name)
 
 if missing_modules:
-    error_msg = f"[FATAL] Required modules missing: {missing_modules}. Bot cannot run safely."
-    print(error_msg)
-    raise RuntimeError(error_msg)
-
-print(f"[STARTUP] All {len(REQUIRED_MODULES)} required modules loaded successfully.")
-
-# ✅ Mark critical systems as operational
-mark_system_ok("liquidity_engine")
-mark_system_ok("decision_tree")
-mark_system_ok("hybrid_sltp")
-mark_system_ok("anti_revenge")
-mark_system_ok("smc_trader")
-
-print(f"[SAFETY] All critical trading systems operational: {trading_safe()[0]}")
+    warning_msg = f"[WARNING] Optional trading modules missing: {missing_modules}. Trading will run with reduced capabilities."
+    print(warning_msg)
+else:
+    print(f"[STARTUP] All {len(REQUIRED_MODULES)} required modules loaded successfully.")
+    # ✅ Mark critical systems as operational only when all required trading modules are present.
+    mark_system_ok("liquidity_engine")
+    mark_system_ok("decision_tree")
+    mark_system_ok("hybrid_sltp")
+    mark_system_ok("anti_revenge")
+    mark_system_ok("smc_trader")
+    print(f"[SAFETY] All critical trading systems operational: {trading_safe()[0]}")
 
 # --- CANONICAL SMC ENTRY FUNCTION ---
 def main_smc_entry(context):
@@ -6249,7 +6246,7 @@ def populate_smc_ict_features(context):
     except Exception:
         features['ob_detected'] = False
 
-    # 7) Inducement detection (heuristic) - with validation
+    # 7) Inducement detection (heuristic) so basically it has to be with validation       
     try:
         lookback = 10
         closes = df['close'].iloc[-lookback:]
