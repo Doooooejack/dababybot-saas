@@ -462,13 +462,13 @@
         }
         
         /* AI ROBOT BACKGROUND FOR REGISTER */
-        #register {
+        #register-section {
             position: relative;
             overflow: hidden;
             background: linear-gradient(135deg, #1a2a3a 0%, #243545 100%);
         }
         
-        #register::before {
+        #register-section::before {
             content: '';
             position: absolute;
             right: -50px;
@@ -482,7 +482,7 @@
             z-index: 0;
         }
         
-        #register > * {
+        #register-section > * {
             position: relative;
             z-index: 1;
         }
@@ -615,13 +615,13 @@
         <p class="header-subtitle">Intelligent Automated Trading with Machine Learning</p>
         
         <div class="tab">
-            <button class="tab-btn active" onclick="showTab('register', event)">📝 Register</button>
-            <button class="tab-btn" onclick="showTab('login', event)">🔓 Login</button>
-            <button class="tab-btn" onclick="showTab('dashboard', event)">📊 Dashboard</button>
+            <button class="tab-btn active" onclick="showTab('register-section', event)">📝 Register</button>
+            <button class="tab-btn" onclick="showTab('login-section', event)">🔓 Login</button>
+            <button class="tab-btn" onclick="showTab('dashboard-section', event)">📊 Dashboard</button>
         </div>
         
         <!-- REGISTER SECTION -->
-        <div id="register" class="card">
+        <div id="register-section" class="card">
             <h2>📝 Create Account</h2>
             <div id="register-msg"></div>
             <label for="reg-username">Username</label>
@@ -888,7 +888,7 @@
         </div>
         
         <!-- LOGIN SECTION -->
-        <div id="login" class="card hidden">
+        <div id="login-section" class="card hidden">
             <h2>🔓 Login to Your Account</h2>
             <div id="login-msg"></div>
             <label for="login-username">Username</label>
@@ -901,7 +901,7 @@
         </div>
         
         <!-- DASHBOARD SECTION -->
-        <div id="dashboard" class="card hidden">
+        <div id="dashboard-section" class="card hidden">
             <h2>📊 Trader Dashboard</h2>
             <div id="dashboard-msg"></div>
             
@@ -1317,7 +1317,7 @@
         }
         
         async function register() {
-            const btn = document.querySelector('#register button.success');
+            const btn = document.querySelector('#register-section button.success');
             btn.disabled = true;
             const username = document.getElementById('reg-username').value.trim();
             const email = document.getElementById('reg-email').value.trim();
@@ -1445,7 +1445,7 @@
                 document.getElementById('user-name').textContent = user.username;
                 document.getElementById('user-plan').textContent = user.subscription_plan.toUpperCase();
                 
-                showTab('dashboard', null);
+                showTab('dashboard-section', null);
                 loadStats();
                 checkSubscriptionStatus();  // Check subscription on load
             } catch (err) {
@@ -1830,7 +1830,7 @@
                 localStorage.removeItem('auth_token');
                 authToken = null;
                 showToast('Logged out successfully', 'success', 2000);
-                setTimeout(() => showTab('register', null), 800);
+                setTimeout(() => showTab('register-section', null), 800);
             }
         }
         
