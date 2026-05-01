@@ -29,6 +29,11 @@ except ImportError:
     MT5_AVAILABLE = False
     logging.warning("MetaTrader5 library not available - demo mode")
 
+# MT5 Connection State Management
+mt5_connection_lock = threading.Lock()
+mt5_current_account = None  # Track which account is currently connected
+mt5_current_credentials = {}  # Track current MT5 credentials
+
 # Load environment variables from .env file
 try:
     from dotenv import load_dotenv
@@ -709,6 +714,8 @@ def get_profile():
 @jwt_required()
 def connect_mt5():
     """Connect and validate user's MT5 account - returns account info or error"""
+    global mt5_current_account, mt5_current_credentials
+    
     user_id = get_jwt_identity()
     user = User.query.get(user_id)
     data = request.get_json()
@@ -716,8 +723,8 @@ def connect_mt5():
     if not user:
         return jsonify({'error': 'User not found'}), 404
     
-    account = data.get('account')
-    server = data.get('server', 'MetaQuotes-Demo')
+    account = str(data.get('account')).strip()
+    server = data.get('server', 'MetaQuotes-Demo').strip()
     password = data.get('password')
     
     # Validate inputs
@@ -730,18 +737,43 @@ def connect_mt5():
     
     if MT5_AVAILABLE:
         try:
-            # Try to connect to MT5
-            if not mt5.initialize(login=int(account), server=server, password=password):
-                error_msg = f"MT5 connection failed: {mt5.last_error()}"
-            else:
-                # Get account info to confirm connection works
-                account_info = mt5.account_info()
-                mt5.shutdown()  # Close connection (bot will open its own)
+            with mt5_connection_lock:
+                # Ensure clean slate - shutdown any existing connection
+                try:
+                    if mt5.initialized:
+                        mt5.shutdown()
+                except:
+                    pass
                 
-                if account_info is None:
-                    error_msg = "Could not retrieve account information"
+                # Small delay to ensure clean shutdown
+                time.sleep(0.5)
+                
+                # Now connect with the user's credentials
+                if not mt5.initialize(login=int(account), server=server, password=password):
+                    error_msg = f"MT5 connection failed: {mt5.last_error()}"
+                    logging.warning(f"MT5 init failed for account {account} on server {server}: {mt5.last_error()}")
+                else:
+                    # Get account info to confirm connection works
+                    account_info = mt5.account_info()
+                    
+                    if account_info is None:
+                        error_msg = "Could not retrieve account information - check credentials"
+                        logging.warning(f"Failed to get account info for {account}")
+                    else:
+                        # Store successful connection details
+                        mt5_current_account = int(account)
+                        mt5_current_credentials = {
+                            'login': int(account),
+                            'server': server,
+                            'password': password
+                        }
+                        logging.info(f"Successfully connected to MT5 account {account} on server {server}")
+                    
+                    # Shutdown after validation (bot will open its own)
+                    mt5.shutdown()
         except Exception as e:
             error_msg = f"Connection error: {str(e)}"
+            logging.error(f"MT5 connection exception for account {account}: {str(e)}")
     else:
         # Running on Render (Linux) - can't validate with MT5
         # Return demo info with warning
@@ -754,7 +786,7 @@ def connect_mt5():
     
     # Save the credentials to database
     user.mt5_server = server
-    user.mt5_account = str(account)
+    user.mt5_account = account
     user.mt5_password = password  # TODO: Encrypt in production!
     user.mt5_validated = True
     db.session.commit()
@@ -768,7 +800,8 @@ def connect_mt5():
             'server': server,
             'balance': float(account_info.get('balance', 0)) if account_info else 0.0,
             'equity': float(account_info.get('equity', 0)) if account_info else 0.0,
-            'platform': 'MetaTrader5'
+            'platform': 'MetaTrader5',
+            'connected_at': datetime.utcnow().isoformat()
         }
     }
     
@@ -783,6 +816,8 @@ def connect_mt5():
 @jwt_required()
 def get_mt5_account_info():
     """Fetch current MT5 account balance/equity (refresh from server if available)"""
+    global mt5_current_account
+    
     user_id = get_jwt_identity()
     user = User.query.get(user_id)
     
@@ -797,9 +832,35 @@ def get_mt5_account_info():
     # Try to get live account info (if MT5 available - Windows only)
     if MT5_AVAILABLE and user.mt5_account:
         try:
-            if mt5.initialize(login=int(user.mt5_account), server=user.mt5_server, password=user.mt5_password):
-                account_info = mt5.account_info()
-                mt5.shutdown()
+            with mt5_connection_lock:
+                # Ensure we're connecting to the right account
+                current_account = int(user.mt5_account)
+                
+                # Only reinitialize if we're not already connected to this account
+                if mt5_current_account != current_account:
+                    # Shutdown existing connection
+                    try:
+                        if mt5.initialized:
+                            mt5.shutdown()
+                    except:
+                        pass
+                    
+                    time.sleep(0.5)  # Ensure clean shutdown
+                    
+                    # Connect to the correct account
+                    if not mt5.initialize(login=current_account, server=user.mt5_server, password=user.mt5_password):
+                        logging.warning(f"Failed to initialize MT5 for account {current_account}: {mt5.last_error()}")
+                        account_info = None
+                    else:
+                        mt5_current_account = current_account
+                        account_info = mt5.account_info()
+                else:
+                    # Already connected to the right account, just get info
+                    account_info = mt5.account_info()
+                
+                # Don't shutdown here - let connection persist for next call
+                if account_info is None:
+                    logging.warning(f"Could not get account info for {current_account}")
         except Exception as e:
             logging.warning(f"Failed to fetch live account info for {user.username}: {str(e)}")
     
