@@ -45,9 +45,28 @@ logs/
 venv/
 env/
 ENV/
+.anaconda/
+.anaconda3/
+.conda/
+.condarc
 
-venv/
-env/
+# Local cache and tool state
+.cache/
+.config/
+.continuum/
+.dotnet/
+.expo/
+.gk/
+.ipython/
+.keras/
+.matplotlib/
+.bitowingman/
+.mobisystems/
+.skiko/
+.spyder-py3/
+.vscode-R/
+"3D Objects"/
+Anaconda3-*.exe
 
 # OS
 .DS_Store
