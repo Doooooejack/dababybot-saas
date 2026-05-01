@@ -17,6 +17,7 @@ import json
 import uuid
 from datetime import datetime, timedelta
 from functools import wraps
+from pathlib import Path
 import logging
 from collections import defaultdict
 import time
@@ -37,10 +38,47 @@ mt5_current_credentials = {}  # Track current MT5 credentials
 # Load environment variables from .env file
 try:
     from dotenv import load_dotenv
-    load_dotenv()
-    print("[CONFIG] Loaded environment variables from .env file")
+    env_path = Path(__file__).resolve().parent / '.env'
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path)
+        print(f"[CONFIG] Loaded environment variables from {env_path}")
+    else:
+        load_dotenv()
+        print("[CONFIG] Loaded environment variables from default .env location")
 except ImportError:
     print("[CONFIG] python-dotenv not installed, using system environment variables")
+
+
+def get_email_config():
+    """Load SMTP configuration from environment, falling back to bot credentials."""
+    email_from = os.getenv('EMAIL_FROM', '').strip()
+    email_password = os.getenv('EMAIL_PASSWORD', '').strip()
+    smtp_host = os.getenv('SMTP_HOST', 'smtp.gmail.com').strip()
+    smtp_port_str = os.getenv('SMTP_PORT', '465').strip()
+
+    if not email_from or not email_password:
+        try:
+            import botMayl999990000th as bot_module
+            fallback_from = getattr(bot_module, 'EMAIL_FROM', '').strip()
+            fallback_password = getattr(bot_module, 'EMAIL_PASSWORD', '').strip()
+            fallback_host = getattr(bot_module, 'SMTP_HOST', 'smtp.gmail.com')
+            fallback_port = getattr(bot_module, 'SMTP_PORT', 465)
+
+            if not email_from and fallback_from:
+                email_from = fallback_from
+            if not email_password and fallback_password:
+                email_password = fallback_password
+            if not smtp_host and fallback_host:
+                smtp_host = fallback_host
+            if not smtp_port_str and fallback_port:
+                smtp_port_str = str(fallback_port)
+
+            if email_from and email_password:
+                print("[CONFIG] SMTP config loaded from botMayl999990000th fallback")
+        except Exception:
+            pass
+
+    return email_from, email_password, smtp_host, smtp_port_str
 
 # Try to import bot trading functions
 try:
@@ -580,19 +618,18 @@ def register():
 
     # Send activation email only if SMTP is configured.
     email_sent = False
+    email_error = None
+    email_config_missing = False
     try:
-        EMAIL_FROM = os.getenv('EMAIL_FROM', '').strip()
-        EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD', '').strip()
-        SMTP_HOST = os.getenv('SMTP_HOST', 'smtp.gmail.com').strip()
-        SMTP_PORT_STR = os.getenv('SMTP_PORT', '465').strip()
-        
+        EMAIL_FROM, EMAIL_PASSWORD, SMTP_HOST, SMTP_PORT_STR = get_email_config()
+
         # Only attempt email if we have valid credentials
         if EMAIL_FROM and EMAIL_PASSWORD and SMTP_HOST:
             try:
                 SMTP_PORT = int(SMTP_PORT_STR)
             except ValueError:
                 SMTP_PORT = 465
-            
+
             from email.mime.text import MIMEText
             import smtplib
 
@@ -664,9 +701,11 @@ def register():
                 server.sendmail(EMAIL_FROM, [email], msg.as_string())
             email_sent = True
         else:
-            print("[EMAIL INFO] SMTP credentials are not configured; skipping email delivery for registration.")
+            email_config_missing = True
+            logging.warning("[EMAIL INFO] SMTP credentials are not configured; skipping email delivery for registration.")
     except Exception as e:
-        print(f"[EMAIL ERROR] Failed to send activation email: {e}")
+        email_error = str(e)
+        logging.error(f"[EMAIL ERROR] Failed to send activation email: {email_error}")
         # Don't fail registration due to email issues
 
     response = {
@@ -676,12 +715,15 @@ def register():
         response['subscription_code'] = subscription_code
         if email_sent:
             response['message'] = 'User registered successfully. Subscription code has been sent to your email.'
-        else:
+        elif email_config_missing:
             response['message'] = 'User registered successfully. Subscription code is available below because email delivery is not configured.'
+        else:
+            response['message'] = 'User registered successfully. Subscription code is available below because email could not be sent.'
+            response['email_error'] = email_error
     else:
         response['message'] = 'User registered successfully on the Free plan.'
 
-    response['email_status'] = 'sent' if email_sent else 'skipped'
+    response['email_status'] = 'sent' if email_sent else ('skipped' if email_config_missing else 'failed')
 
     return jsonify(response), 201
 
