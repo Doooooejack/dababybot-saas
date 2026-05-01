@@ -29,6 +29,14 @@ except ImportError:
     MT5_AVAILABLE = False
     logging.warning("MetaTrader5 library not available - demo mode")
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("[CONFIG] Loaded environment variables from .env file")
+except ImportError:
+    print("[CONFIG] python-dotenv not installed, using system environment variables")
+
 # Try to import bot trading functions
 try:
     from botMayl999990000th import run_live_trading_loop
