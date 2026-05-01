@@ -35,6 +35,50 @@ mt5_connection_lock = threading.Lock()
 mt5_current_account = None  # Track which account is currently connected
 mt5_current_credentials = {}  # Track current MT5 credentials
 
+
+def validate_mt5_credentials(account, server, password):
+    """Validate MT5 credentials by connecting and returning live account info."""
+    if not MT5_AVAILABLE:
+        raise RuntimeError(
+            'MetaTrader5 integration is unavailable on this host. Run the platform on Windows with MetaTrader5 installed to validate live account details.'
+        )
+
+    account_info = None
+    with mt5_connection_lock:
+        try:
+            if mt5.initialized:
+                mt5.shutdown()
+        except Exception:
+            pass
+
+        time.sleep(0.5)
+
+        if not mt5.initialize(login=int(account), server=server, password=password):
+            raise RuntimeError(f"MT5 connection failed: {mt5.last_error()}")
+
+        try:
+            account_info = mt5.account_info()
+            if account_info is None:
+                raise RuntimeError("Could not retrieve MT5 account information after login.")
+
+            try:
+                actual_login = int(getattr(account_info, 'login', account))
+                if actual_login != int(account):
+                    raise RuntimeError(
+                        f"MT5 login mismatch: expected {account}, got {actual_login}. Check your credentials."
+                    )
+            except Exception:
+                pass
+
+            return account_info
+        finally:
+            try:
+                if mt5.initialized:
+                    mt5.shutdown()
+            except Exception:
+                pass
+
+
 # Load environment variables from .env file
 try:
     from dotenv import load_dotenv
@@ -47,6 +91,10 @@ try:
         print("[CONFIG] Loaded environment variables from default .env location")
 except ImportError:
     print("[CONFIG] python-dotenv not installed, using system environment variables")
+
+ALLOW_UNSUBSCRIBED_BOT = os.getenv('ALLOW_UNSUBSCRIBED_BOT', '1').lower() in ('1', 'true', 'yes')
+if ALLOW_UNSUBSCRIBED_BOT:
+    logging.info("Bot startup without active subscription is enabled")
 
 
 def get_email_config():
@@ -200,10 +248,11 @@ app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'jwt-secret-key-
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=30)
 
 # Database
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
-    'DATABASE_URL',
-    'sqlite:///botplatform.db'  # SQLite for dev, switch to PostgreSQL in production
-)
+instance_dir = Path(__file__).resolve().parent / 'instance'
+instance_dir.mkdir(parents=True, exist_ok=True)
+instance_db_file = instance_dir / 'botplatform.db'
+default_db_path = f"sqlite:///{instance_db_file.as_posix()}"
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', default_db_path)
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
@@ -702,6 +751,7 @@ def register():
             email_sent = True
         else:
             email_config_missing = True
+            email_error = 'SMTP credentials are not configured or are incomplete; registration email skipped.'
             logging.warning("[EMAIL INFO] SMTP credentials are not configured; skipping email delivery for registration.")
     except Exception as e:
         email_error = str(e)
@@ -717,6 +767,7 @@ def register():
             response['message'] = 'User registered successfully. Subscription code has been sent to your email.'
         elif email_config_missing:
             response['message'] = 'User registered successfully. Subscription code is available below because email delivery is not configured.'
+            response['email_error'] = email_error
         else:
             response['message'] = 'User registered successfully. Subscription code is available below because email could not be sent.'
             response['email_error'] = email_error
@@ -796,58 +847,21 @@ def connect_mt5():
     if not account or not password:
         return jsonify({'error': 'Account number and password required'}), 400
     
-    # Try to validate credentials (if MT5 available - Windows only)
+    # Validate credentials on the server to ensure real MT5 account details
     account_info = None
-    error_msg = None
-    
-    if MT5_AVAILABLE:
-        try:
-            with mt5_connection_lock:
-                # Ensure clean slate - shutdown any existing connection
-                try:
-                    if mt5.initialized:
-                        mt5.shutdown()
-                except:
-                    pass
-                
-                # Small delay to ensure clean shutdown
-                time.sleep(0.5)
-                
-                # Now connect with the user's credentials
-                if not mt5.initialize(login=int(account), server=server, password=password):
-                    error_msg = f"MT5 connection failed: {mt5.last_error()}"
-                    logging.warning(f"MT5 init failed for account {account} on server {server}: {mt5.last_error()}")
-                else:
-                    # Get account info to confirm connection works
-                    account_info = mt5.account_info()
-                    
-                    if account_info is None:
-                        error_msg = "Could not retrieve account information - check credentials"
-                        logging.warning(f"Failed to get account info for {account}")
-                    else:
-                        # Store successful connection details
-                        mt5_current_account = int(account)
-                        mt5_current_credentials = {
-                            'login': int(account),
-                            'server': server,
-                            'password': password
-                        }
-                        logging.info(f"Successfully connected to MT5 account {account} on server {server}")
-                    
-                    # Shutdown after validation (bot will open its own)
-                    mt5.shutdown()
-        except Exception as e:
-            error_msg = f"Connection error: {str(e)}"
-            logging.error(f"MT5 connection exception for account {account}: {str(e)}")
-    else:
-        # Running on Render (Linux) - can't validate with MT5
-        # Return demo info with warning
-        logging.info(f"MT5 not available on this platform (demo mode) - accepting credentials on faith")
-        account_info = {'balance': 10000.0, 'equity': 10000.0}  # Demo values
-    
-    # If we got an error during validation, return it
-    if error_msg and account_info is None:
-        return jsonify({'error': error_msg, 'success': False}), 400
+    try:
+        account_info = validate_mt5_credentials(account, server, password)
+    except Exception as e:
+        logging.warning(f"MT5 connect validation failed for account {account} on server {server}: {str(e)}")
+        return jsonify({'error': str(e), 'success': False}), 400
+
+    mt5_current_account = int(account)
+    mt5_current_credentials = {
+        'login': int(account),
+        'server': server,
+        'password': password
+    }
+    logging.info(f"Successfully validated MT5 account {account} on server {server}")
     
     # Save the credentials to database
     user.mt5_server = server
@@ -856,6 +870,13 @@ def connect_mt5():
     user.mt5_validated = True
     db.session.commit()
     
+    def _extract_mt5_value(info, field, default=0.0):
+        if info is None:
+            return float(default)
+        if isinstance(info, dict):
+            return float(info.get(field, default) or default)
+        return float(getattr(info, field, default) or default)
+
     # Return account info
     response_data = {
         'message': 'MT5 account connected successfully',
@@ -863,8 +884,8 @@ def connect_mt5():
         'account': {
             'number': account,
             'server': server,
-            'balance': float(account_info.get('balance', 0)) if account_info else 0.0,
-            'equity': float(account_info.get('equity', 0)) if account_info else 0.0,
+            'balance': _extract_mt5_value(account_info, 'balance', 0.0),
+            'equity': _extract_mt5_value(account_info, 'equity', 0.0),
             'platform': 'MetaTrader5',
             'connected_at': datetime.utcnow().isoformat()
         }
@@ -892,61 +913,42 @@ def get_mt5_account_info():
     if not user.mt5_account:
         return jsonify({'error': 'No MT5 account connected', 'connected': False}), 400
     
-    account_info = None
-    
-    # Try to get live account info (if MT5 available - Windows only)
-    if MT5_AVAILABLE and user.mt5_account:
-        try:
-            with mt5_connection_lock:
-                # Ensure we're connecting to the right account
-                current_account = int(user.mt5_account)
-                
-                # Only reinitialize if we're not already connected to this account
-                if mt5_current_account != current_account:
-                    # Shutdown existing connection
-                    try:
-                        if mt5.initialized:
-                            mt5.shutdown()
-                    except:
-                        pass
-                    
-                    time.sleep(0.5)  # Ensure clean shutdown
-                    
-                    # Connect to the correct account
-                    if not mt5.initialize(login=current_account, server=user.mt5_server, password=user.mt5_password):
-                        logging.warning(f"Failed to initialize MT5 for account {current_account}: {mt5.last_error()}")
-                        account_info = None
-                    else:
-                        mt5_current_account = current_account
-                        account_info = mt5.account_info()
-                else:
-                    # Already connected to the right account, just get info
-                    account_info = mt5.account_info()
-                
-                # Don't shutdown here - let connection persist for next call
-                if account_info is None:
-                    logging.warning(f"Could not get account info for {current_account}")
-        except Exception as e:
-            logging.warning(f"Failed to fetch live account info for {user.username}: {str(e)}")
-    
-    # Return account info (from live MT5 or demo values)
+    if not MT5_AVAILABLE:
+        return jsonify({
+            'error': 'MetaTrader5 integration is unavailable on this server. Live account validation requires a Windows host with MetaTrader5 installed.',
+            'connected': False
+        }), 503
+
+    if not user.mt5_account:
+        return jsonify({'error': 'No MT5 account connected', 'connected': False}), 400
+
+    try:
+        account_info = validate_mt5_credentials(user.mt5_account, user.mt5_server, user.mt5_password)
+    except Exception as e:
+        logging.warning(f"Failed to fetch live account info for {user.username}: {str(e)}")
+        user.mt5_validated = False
+        db.session.commit()
+        return jsonify({'error': str(e), 'connected': False}), 400
+
+    # Persist validation state
+    user.mt5_validated = True
+    db.session.commit()
+
     response_data = {
         'connected': True,
         'account': {
             'number': user.mt5_account,
             'server': user.mt5_server,
             'platform': 'MetaTrader5',
-            'balance': float(account_info.balance) if account_info else 10000.0,  # Demo default
-            'equity': float(account_info.equity) if account_info else 10000.0,
-            'margin_level': float(account_info.margin_level) if account_info else 0.0,
-            'free_margin': float(account_info.margin_free) if account_info else 0.0
+            'balance': float(account_info.balance),
+            'equity': float(account_info.equity),
+            'margin_level': float(account_info.margin_level) if hasattr(account_info, 'margin_level') else 0.0,
+            'free_margin': float(account_info.margin_free) if hasattr(account_info, 'margin_free') else 0.0,
+            'leverage': int(account_info.leverage) if hasattr(account_info, 'leverage') else None,
+            'trade_mode': str(getattr(account_info, 'trade_mode', 'unknown'))
         }
     }
-    
-    if not MT5_AVAILABLE:
-        response_data['account']['demo_mode'] = True
-        response_data['account']['message'] = 'Running in demo mode - refresh balance when bot is running on Windows'
-    
+
     return jsonify(response_data), 200
 
 
@@ -1353,27 +1355,32 @@ def start_bot():
     if not user:
         return jsonify({'error': 'User not found'}), 404
     
-    # CHECK SUBSCRIPTION - bot requires active subscription
-    if not user.subscription_key_verified or not user.subscription_active:
-        return jsonify({
-            'error': 'Active subscription required to run bot',
-            'requires_subscription': True
-        }), 403
-    
-    # Check if subscription expired
-    if user.subscription_expiry and user.subscription_expiry < datetime.utcnow():
-        user.subscription_active = False
-        db.session.commit()
-        return jsonify({
-            'error': 'Subscription has expired. Please renew your subscription.',
-            'subscription_expired': True
-        }), 403
+    # CHECK SUBSCRIPTION - allow local startup by default for demo/testing
+    allow_unsubscribed = os.getenv('ALLOW_UNSUBSCRIBED_BOT', '1').lower() in ('1', 'true', 'yes')
+    if not allow_unsubscribed:
+        if not user.subscription_key_verified or not user.subscription_active:
+            return jsonify({
+                'error': 'Active subscription required to run bot',
+                'requires_subscription': True
+            }), 403
+        
+        # Check if subscription expired
+        if user.subscription_expiry and user.subscription_expiry < datetime.utcnow():
+            user.subscription_active = False
+            db.session.commit()
+            return jsonify({
+                'error': 'Subscription has expired. Please renew your subscription.',
+                'subscription_expired': True
+            }), 403
     
     if user.bot_running:
         return jsonify({'error': 'Bot already running'}), 400
     
     if not user.mt5_account:
         return jsonify({'error': 'MT5 credentials not configured'}), 400
+
+    if MT5_AVAILABLE and not user.mt5_validated:
+        return jsonify({'error': 'MT5 account not validated. Please reconnect your MT5 account.'}), 400
     
     # Get bot configuration from request
     data = request.get_json() or {}
@@ -2798,6 +2805,10 @@ async function registerFixed() {
                 } catch (err) {}
             }
             
+            function formatCurrency(value) {
+                return '$' + Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            }
+            
             async function connectMT5() {
                 let server = document.getElementById('mt5-server-list').value;
                 const customServer = document.getElementById('mt5-custom-server').value;
@@ -2821,35 +2832,43 @@ async function registerFixed() {
                 });
                 
                 if (res.ok) {
+                    const data = await res.json();
                     alert('✓ MT5 Connected to: ' + server);
                     document.getElementById('mt5-account').value = '';
                     document.getElementById('mt5-password').value = '';
                     document.getElementById('mt5-custom-server').value = '';
                     document.getElementById('mt5-server-list').value = '';
                     
-                    // Show live dashboard
-                    showLiveDashboard(server, account);
+                    // Show live dashboard with real MT5 account information
+                    showLiveDashboard(server, account, data.account || {});
                 } else {
-                    alert('Failed to connect MT5');
+                    let error = { error: 'Unknown error' };
+                    try {
+                        error = await res.json();
+                    } catch (parseErr) {
+                        error = { error: await res.text() };
+                    }
+                    alert('Failed to connect MT5: ' + (error.error || error.message || 'Check credentials'));
                 }
             }
             
-            function showLiveDashboard(server, account) {
+            function showLiveDashboard(server, account, accountInfo = {}) {
                 const dashboard = document.getElementById('live-dashboard');
-                document.getElementById('dashboard-server').textContent = server;
-                document.getElementById('dashboard-account').textContent = account;
+                document.getElementById('dashboard-server').textContent = accountInfo.server || server;
+                document.getElementById('dashboard-account').textContent = accountInfo.number || account;
                 
-                // Mock data - replace with real MT5 data when bot connects
-                document.getElementById('live-balance').textContent = '$10,000.00';
-                document.getElementById('live-equity').textContent = '$10,245.50';
-                document.getElementById('live-margin').textContent = '12%';
-                document.getElementById('live-pnl').textContent = '+$245.50';
-                document.getElementById('live-pnl').style.color = '#51cf66';
+                document.getElementById('live-balance').textContent = formatCurrency(accountInfo.balance);
+                document.getElementById('live-equity').textContent = formatCurrency(accountInfo.equity);
+                document.getElementById('live-margin').textContent = (accountInfo.margin_level != null ? accountInfo.margin_level.toFixed(2) + '%' : '0%');
+                document.getElementById('live-pnl').textContent = accountInfo.pnl_today != null ? (accountInfo.pnl_today >= 0 ? '+$' : '-$') + Math.abs(accountInfo.pnl_today).toFixed(2) : '$0.00';
+                document.getElementById('live-pnl').style.color = (accountInfo.pnl_today != null && accountInfo.pnl_today >= 0) ? '#51cf66' : '#ff6b6b';
                 
-                // Update status
+                // Update status and display
                 updateBotStatus();
-                
                 dashboard.style.display = 'block';
+                
+                // Refresh live account info immediately in case the connect response was demo/fallback
+                refreshLiveAccountInfo();
             }
             
             async function startBotLive() {
@@ -2875,6 +2894,7 @@ async function registerFixed() {
                     headers: { 'Authorization': 'Bearer ' + authToken, 'Content-Type': 'application/json' },
                     body: JSON.stringify({ symbols, risk, lotsize })
                 });
+                const botData = await botRes.json().catch(() => ({}));
                 
                 if (botRes.ok) {
                     localStorage.setItem('bot_running', 'true');
@@ -2882,7 +2902,8 @@ async function registerFixed() {
                     alert('✓ Bot is now running!');
                     updateBotStatus();
                 } else {
-                    alert('Failed to start bot');
+                    alert('Failed to start bot: ' + (botData.error || botData.message || 'Unknown error'));
+                    console.error('Start bot error:', botData);
                 }
             }
             
@@ -2921,7 +2942,29 @@ async function registerFixed() {
                 }
             }
             
+            async function refreshLiveAccountInfo() {
+                try {
+                    const res = await fetch('/api/user/mt5-account-info', {
+                        headers: { 'Authorization': 'Bearer ' + authToken }
+                    });
+                    const data = await res.json();
+                    if (!res.ok) {
+                        console.warn('Could not refresh MT5 account info:', data.error || data.message);
+                        return;
+                    }
+                    const accountInfo = data.account || {};
+                    document.getElementById('live-balance').textContent = formatCurrency(accountInfo.balance);
+                    document.getElementById('live-equity').textContent = formatCurrency(accountInfo.equity);
+                    document.getElementById('live-margin').textContent = (accountInfo.margin_level != null ? accountInfo.margin_level.toFixed(2) + '%' : '0%');
+                    document.getElementById('dashboard-server').textContent = accountInfo.server || document.getElementById('dashboard-server').textContent;
+                    document.getElementById('dashboard-account').textContent = accountInfo.number || document.getElementById('dashboard-account').textContent;
+                } catch (err) {
+                    console.error('Failed to refresh MT5 account info:', err);
+                }
+            }
+            
             async function refreshLiveDashboard() {
+                await refreshLiveAccountInfo();
                 try {
                     const res = await fetch('/api/trades/stats', {
                         headers: { 'Authorization': 'Bearer ' + authToken }
@@ -2987,12 +3030,14 @@ async function registerFixed() {
                     method: 'POST',
                     headers: { 'Authorization': 'Bearer ' + authToken }
                 });
+                const data = await res.json().catch(() => ({}));
                 if (res.ok) {
                     localStorage.setItem('bot_running', 'true');
                     alert('✓ Bot started!');
                     updateBotStatus();
                 } else {
-                    alert('Error starting bot');
+                    alert('Error starting bot: ' + (data.error || data.message || 'Unknown error'));
+                    console.error('Start bot error:', data);
                 }
                 loadStats();
             }
