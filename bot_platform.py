@@ -479,15 +479,31 @@ def activate_subscription():
     user.subscription_active = True
     user.subscription_code = None
     user.key_activated_at = datetime.utcnow()
-    user.max_symbols = 1
-    if user.subscription_plan == 'pro':
+    
+    # Set subscription expiry date based on plan
+    if user.subscription_plan == 'free':
+        user.subscription_expiry = datetime.utcnow() + timedelta(days=30)  # 30 days for free
+        user.max_symbols = 1
+    elif user.subscription_plan == 'pro':
+        user.subscription_expiry = datetime.utcnow() + timedelta(days=365)  # 1 year
         user.max_symbols = 5
     elif user.subscription_plan == 'elite':
+        user.subscription_expiry = datetime.utcnow() + timedelta(days=365)  # 1 year
         user.max_symbols = 20
     elif user.subscription_plan == 'premium':
+        user.subscription_expiry = datetime.utcnow() + timedelta(days=365)  # 1 year
         user.max_symbols = 50
+    else:
+        user.subscription_expiry = datetime.utcnow() + timedelta(days=365)
+        user.max_symbols = 1
+    
     db.session.commit()
-    return jsonify({'message': 'Subscription activated successfully', 'plan': user.subscription_plan}), 200
+    return jsonify({
+        'message': 'Subscription activated successfully',
+        'plan': user.subscription_plan,
+        'expires': user.subscription_expiry.isoformat(),
+        'max_symbols': user.max_symbols
+    }), 200
 
 @app.route('/api/auth/register', methods=['POST'])
 def register():
@@ -533,12 +549,17 @@ def register():
     subscription_code = None
     subscription_active = False
     subscription_key_verified = False
+    subscription_expiry = None
+    key_activated_at = None
 
     if subscription_plan == 'free':
         subscription_active = True
         subscription_key_verified = True
+        subscription_expiry = datetime.utcnow() + timedelta(days=30)  # 30 days trial
+        key_activated_at = datetime.utcnow()
     else:
         subscription_code = str(random.randint(100000, 999999))
+        subscription_expiry = datetime.utcnow() + timedelta(days=365)  # Will be used if code is redeemed
 
     user = User(
         username=username,
@@ -549,7 +570,9 @@ def register():
         subscription_code=subscription_code,
         subscription_plan=subscription_plan,
         subscription_active=subscription_active,
-        subscription_key_verified=subscription_key_verified
+        subscription_key_verified=subscription_key_verified,
+        subscription_expiry=subscription_expiry,
+        key_activated_at=key_activated_at
     )
     user.set_password(password)
     db.session.add(user)
