@@ -851,6 +851,14 @@ def connect_mt5():
     account_info = None
     try:
         account_info = validate_mt5_credentials(account, server, password)
+    except RuntimeError as e:
+        # If it's MT5 unavailable, return 503
+        if 'unavailable' in str(e).lower():
+            logging.warning(f"MT5 unavailable for account {account}: {str(e)}")
+            return jsonify({'error': str(e), 'success': False}), 503
+        # Other errors are validation failures (bad credentials, connection issues)
+        logging.warning(f"MT5 connect validation failed for account {account} on server {server}: {str(e)}")
+        return jsonify({'error': str(e), 'success': False}), 400
     except Exception as e:
         logging.warning(f"MT5 connect validation failed for account {account} on server {server}: {str(e)}")
         return jsonify({'error': str(e), 'success': False}), 400
@@ -918,9 +926,6 @@ def get_mt5_account_info():
             'error': 'MetaTrader5 integration is unavailable on this server. Live account validation requires a Windows host with MetaTrader5 installed.',
             'connected': False
         }), 503
-
-    if not user.mt5_account:
-        return jsonify({'error': 'No MT5 account connected', 'connected': False}), 400
 
     try:
         account_info = validate_mt5_credentials(user.mt5_account, user.mt5_server, user.mt5_password)
