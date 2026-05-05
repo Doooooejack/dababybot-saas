@@ -1,0 +1,58 @@
+{
+  "test_name": "Mobile Browser Compatibility",
+  "web_service_url": "https://dababybot-saas.onrender.com",
+  "dashboard_url": "https://dababybot-saas.onrender.com/dashboard",
+  "test_devices": [
+    {
+      "device": "iPhone (iOS)",
+      "browser": "Safari",
+      "viewport": "390x844",
+      "status": "\u2705 Ready to test"
+    },
+    {
+      "device": "Android Phone",
+      "browser": "Chrome",
+      "viewport": "412x915",
+      "status": "\u2705 Ready to test"
+    },
+    {
+      "device": "iPad (Tablet)",
+      "browser": "Safari",
+      "viewport": "768x1024",
+      "status": "\u2705 Ready to test"
+    }
+  ],
+  "features_to_test_on_mobile": [
+    "User Registration Form - Fill out on phone",
+    "User Login - Enter credentials on phone",
+    "Dashboard View - See bot status on phone",
+    "Bot Control Buttons - Click start/stop on phone",
+    "Settings Page - Configure MT5 credentials on phone",
+    "Responsive Design - Check layout on small screen",
+    "Touch Responsiveness - Test button clicks and forms",
+    "Network Stability - Test with WiFi and mobile data"
+  ],
+  "expected_workflow": {
+    "step_1": "Open https://dababybot-saas.onrender.com on mobile",
+    "step_2": "Sign up or log in with credentials",
+    "step_3": "View dashboard - shows MT5 account info",
+    "step_4": "Configure MT5 credentials (if needed)",
+    "step_5": "See bot status and real-time updates",
+    "step_6": "Control bot from mobile (start/stop)",
+    "step_7": "View trading logs and performance"
+  },
+  "success_criteria": {
+    "login_works": "You can log in from mobile",
+    "dashboard_responsive": "Dashboard looks good on small screen",
+    "controls_work": "Buttons respond to taps",
+    "updates_live": "Bot status updates in real-time",
+    "no_crashes": "App doesn't freeze or crash"
+  },
+  "next_steps": [
+    "1. Test on your phone browser (iPhone Safari or Android Chrome)",
+    "2. Try all the features listed above",
+    "3. Report any issues or bugs",
+    "4. Check if everything works smoothly",
+    "5. If successful, VPS architecture is production-ready!"
+  ]
+}
