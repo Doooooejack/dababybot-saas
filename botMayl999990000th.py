@@ -85,6 +85,37 @@ except ImportError as e:
     STRATEGY_SYSTEM_AVAILABLE = False
     print(f"[WARNING] Could not import strategy modules: {e}")
 
+# ============================================================================
+# 🚀 ADVANCED TRADING FEATURES INTEGRATION
+# ============================================================================
+try:
+    from market_regime_detector import MarketRegimeDetector, get_adaptive_trading_parameters
+    from correlation_portfolio_optimizer import CorrelationPortfolioOptimizer, AdaptivePositionSizer
+    from market_microstructure_analyzer import AdaptiveMicrostructureAnalyzer
+    from advanced_neural_execution import AdaptiveExecutionEngine
+    ADVANCED_FEATURES_AVAILABLE = True
+    print("[INIT] Advanced trading features loaded successfully!")
+except ImportError as e:
+    ADVANCED_FEATURES_AVAILABLE = False
+    print(f"[WARNING] Could not import advanced features: {e}")
+    # Fallback classes
+    class MarketRegimeDetector:
+        def __init__(self): pass
+        def detect_regime(self, df, symbol): return "TRANSITION", 0.5
+    class CorrelationPortfolioOptimizer:
+        def __init__(self, symbols): pass
+    class AdaptivePositionSizer:
+        def __init__(self, symbols): pass
+    class AdaptiveMicrostructureAnalyzer:
+        def __init__(self, symbols): pass
+        def update_market_data(self, *args): pass
+        def get_microstructure_signal(self, symbol, size): return {'signal': 0, 'confidence': 0.5}
+    class AdaptiveExecutionEngine:
+        def __init__(self, symbols): pass
+        def update_market_state(self, *args): pass
+        def get_execution_decision(self, symbol, order_type, quantity, urgency):
+            return {'action': 2, 'strategy': {'type': 'neutral'}, 'confidence': 0.5}
+
 # Global stop event for graceful interruption (Ctrl+C)
 stop_event = threading.Event()
 def load_historical_buffer_live(symbol, bars=2000, timeframe="M15"):
@@ -709,13 +740,14 @@ except Exception as e:
     
     def apply_all_trading_filters(df, symbol, bos_strength_score, direction="buy", h1_df=None):
         """
-        🎯 MASTER FILTER: Apply all 4 trading filters to validate BOS entry
+        🎯 MASTER FILTER: Apply all 5 trading filters to validate BOS entry
         
         Filters:
         1. External BOS only (major swing from H1/M15, not noise)
         2. Premium/Discount (BUY < equilibrium, SELL > equilibrium)
         3. Strength score (>= 70, up from 60)
         4. Consolidation blocker (range >= 2× ATR)
+        5. Sweep confirmation (liquidity sweep with reclaim)
         
         Returns:
             (all_filters_pass, filter_results_dict)
@@ -797,6 +829,42 @@ except Exception as e:
             else:
                 ratio = vol_details.get("ratio", 1)
                 print(f"[FILTER 4 ✅] {symbol}: Good volatility (range {ratio:.2f}× threshold)")
+            
+            # ✅ Filter 5: Sweep Confirmation (SNIPER MODE)
+            current_price = df['close'].iloc[-1] if len(df) > 0 else None
+            sweep_valid = False
+            sweep_details = {}
+            if current_price is not None:
+                if direction == "buy":
+                    sweep_info = has_bullish_sweep_reclaim(df, current_price, max_lookback=50)
+                    sweep_valid = sweep_info.get("passed", False)
+                    sweep_details = sweep_info
+                else:
+                    sweep_info = has_bearish_sweep_reclaim(df, current_price, max_lookback=50)
+                    sweep_valid = sweep_info.get("passed", False)
+                    sweep_details = sweep_info
+            
+            # In sniper mode, require full sweep (not partial or wick)
+            if ENTRY_MODE == "sniper" and sweep_valid:
+                sweep_type = sweep_details.get("sweep_type", "")
+                if sweep_type not in ("full_sweep", "partial_sweep"):
+                    sweep_valid = False
+                    sweep_details["reason"] = f"Sniper mode requires full/partial sweep, got {sweep_type}"
+            
+            results["filters"]["sweep_confirmation"] = {
+                "passed": sweep_valid,
+                "details": sweep_details
+            }
+            if not sweep_valid:
+                results["all_passed"] = False
+                results["rejection_reason"] = f"❌ No valid sweep detected - {sweep_details.get('reason', 'unknown')}"
+                print(f"[FILTER 5 BLOCKED] {symbol} {direction}: {results['rejection_reason']}")
+            else:
+                sweep_type = sweep_details.get("sweep_type", "unknown")
+                print(f"[FILTER 5 ✅] {symbol}: Sweep confirmed ({sweep_type}) with reclaim")
+                # Add confidence boost for strong sweep types
+                if sweep_type in ("full_sweep", "partial_sweep"):
+                    results["confidence_boost"] += 0.15
             
             return (results["all_passed"], results)
         
@@ -2546,71 +2614,205 @@ def get_recent_swing_high_m15(df_m15: pd.DataFrame, max_lookback: int = 50) -> f
     return _find_recent_swing(df_m15, use_low=False, max_lookback=max_lookback)
 
 
-def compute_hybrid_sl(
+def compute_advanced_hybrid_sl(
     direction: str,
     entry_price: float,
-    atr_m15: float,
-    last_swing_low: float | None = None,
-    last_swing_high: float | None = None,
-    df_m15: pd.DataFrame | None = None,
-    atr_multiplier: float = 1.2,
-    buffer_atr: float = 0.15,
-) -> float:
+    df_m15: pd.DataFrame,
+    df_h1: pd.DataFrame = None,
+    atr_multiplier: float = 1.5,
+    buffer_atr: float = 0.2,
+    use_multi_timeframe: bool = True,
+) -> dict:
     """
-    Hybrid SL logic (structure + ATR).
-    BUY:
-      1) structural_sl = last_swing_low - buffer_atr * ATR
-      2) atr_sl = entry - atr_multiplier * ATR
-      SL = min(structural_sl, atr_sl)
-    SELL:
-      1) structural_sl = last_swing_high + buffer_atr * ATR
-      2) atr_sl = entry + atr_multiplier * ATR
-      SL = max(structural_sl, atr_sl)
-    If structure missing, fall back to pure ATR SL.
+    Advanced Hybrid SL with Multi-Timeframe Analysis
+
+    Features:
+    - ATR-based SL with symbol-aware multipliers
+    - Structural SL from multiple timeframes (M15 + H1)
+    - Volume profile consideration
+    - Dynamic buffer based on market volatility
+    - Support/resistance level integration
+
+    Returns:
+      {
+        "sl": float,
+        "sl_type": str,  # "atr", "structural", "hybrid"
+        "confidence": float,  # 0-1 scale
+        "levels_considered": list,
+        "debug": dict
+      }
     """
     direction = direction.lower()
-    risk_atr = max(atr_m15, 0.1)  # safety floor for gold
+    debug = {}
+    levels_considered = []
 
-    if direction == "buy":
-        atr_sl = float(entry_price) - atr_multiplier * risk_atr
-        # Prefer sweep low if available (FIX #4). Falls back to last_swing_low.
-        structural_ref = None
-        try:
-            if df_m15 is not None:
-                sweep_info = has_bullish_sweep_reclaim(df_m15, entry_price, max_lookback=50)
-                if sweep_info and sweep_info.get("passed") and sweep_info.get("sweep_low") is not None:
-                    structural_ref = float(sweep_info.get("sweep_low"))
-        except Exception:
-            structural_ref = None
+    try:
+        # Compute ATR from multiple timeframes
+        atr_m15 = compute_atr(df_m15)
+        atr_h1 = compute_atr(df_h1) if df_h1 is not None and use_multi_timeframe else atr_m15
 
-        if structural_ref is None:
-            structural_ref = last_swing_low
+        # Use weighted ATR (M15: 70%, H1: 30%)
+        atr_combined = 0.7 * atr_m15 + 0.3 * atr_h1
+        debug["atr_m15"] = atr_m15
+        debug["atr_h1"] = atr_h1
+        debug["atr_combined"] = atr_combined
 
-        if structural_ref is not None:
-            structural_sl = float(structural_ref) - buffer_atr * risk_atr
-            return min(structural_sl, atr_sl)
-        return atr_sl
-    elif direction == "sell":
-        atr_sl = float(entry_price) + atr_multiplier * risk_atr
-        # Prefer sweep high if available (FIX #4). Falls back to last_swing_high.
-        structural_ref = None
-        try:
-            if df_m15 is not None:
-                sweep_info = has_bearish_sweep_reclaim(df_m15, entry_price, max_lookback=50)
-                if sweep_info and sweep_info.get("passed") and sweep_info.get("sweep_high") is not None:
-                    structural_ref = float(sweep_info.get("sweep_high"))
-        except Exception:
-            structural_ref = None
+        # Symbol-aware ATR multiplier
+        symbol = getattr(df_m15, '_symbol', 'UNKNOWN') if hasattr(df_m15, '_symbol') else 'UNKNOWN'
+        is_fx = _is_forex_symbol(symbol)
+        is_gold = 'XAU' in symbol.upper()
 
-        if structural_ref is None:
-            structural_ref = last_swing_high
+        if is_fx:
+            base_multiplier = 1.8  # Wider for FX volatility
+        elif is_gold:
+            base_multiplier = 2.2  # Even wider for gold
+        else:
+            base_multiplier = 2.0  # Default
 
-        if structural_ref is not None:
-            structural_sl = float(structural_ref) + buffer_atr * risk_atr
-            return max(structural_sl, atr_sl)
-        return atr_sl
-    else:
-        raise ValueError(f"Unknown direction: {direction}")
+        # Adjust multiplier based on current volatility
+        volatility_ratio = atr_combined / df_m15['close'].rolling(20).std().iloc[-1] if len(df_m15) > 20 else 1.0
+        if volatility_ratio > 1.5:  # High volatility
+            adjusted_multiplier = base_multiplier * 1.3
+        elif volatility_ratio < 0.8:  # Low volatility
+            adjusted_multiplier = base_multiplier * 0.8
+        else:
+            adjusted_multiplier = base_multiplier
+
+        atr_multiplier = max(atr_multiplier, adjusted_multiplier)
+        debug["adjusted_multiplier"] = adjusted_multiplier
+
+        # ATR-based SL
+        risk_atr = max(atr_combined * atr_multiplier, 0.1)
+        if direction == "buy":
+            atr_sl = float(entry_price) - risk_atr
+        else:
+            atr_sl = float(entry_price) + risk_atr
+        levels_considered.append(("atr_sl", atr_sl, "pure_atr"))
+
+        # Structural SL from multiple timeframes
+        structural_levels = []
+
+        # M15 swing levels
+        swing_low_m15 = get_recent_swing_low_m15(df_m15)
+        swing_high_m15 = get_recent_swing_high_m15(df_m15)
+
+        if direction == "buy" and swing_low_m15 is not None:
+            structural_sl_m15 = float(swing_low_m15) - buffer_atr * atr_m15
+            structural_levels.append(("swing_low_m15", structural_sl_m15))
+        elif direction == "sell" and swing_high_m15 is not None:
+            structural_sl_m15 = float(swing_high_m15) + buffer_atr * atr_m15
+            structural_levels.append(("swing_high_m15", structural_sl_m15))
+
+        # H1 swing levels (if available)
+        if df_h1 is not None and use_multi_timeframe:
+            swing_low_h1 = get_recent_swing_low_m15(df_h1)  # Reuse function for H1
+            swing_high_h1 = get_recent_swing_high_m15(df_h1)
+
+            if direction == "buy" and swing_low_h1 is not None:
+                structural_sl_h1 = float(swing_low_h1) - buffer_atr * atr_h1
+                structural_levels.append(("swing_low_h1", structural_sl_h1))
+            elif direction == "sell" and swing_high_h1 is not None:
+                structural_sl_h1 = float(swing_high_h1) + buffer_atr * atr_h1
+                structural_levels.append(("swing_high_h1", structural_sl_h1))
+
+        # Find best structural SL
+        best_structural_sl = None
+        if structural_levels:
+            if direction == "buy":
+                # For buys, use the highest structural level (most conservative)
+                best_structural_sl = max(level[1] for level in structural_levels)
+            else:
+                # For sells, use the lowest structural level (most conservative)
+                best_structural_sl = min(level[1] for level in structural_levels)
+            levels_considered.append(("structural_sl", best_structural_sl, "multi_timeframe"))
+
+        # Volume profile consideration (recent high volume areas)
+        volume_levels = []
+        if 'volume' in df_m15.columns and len(df_m15) > 50:
+            recent_df = df_m15.iloc[-50:]
+            avg_volume = recent_df['volume'].mean()
+            high_volume_bars = recent_df[recent_df['volume'] > avg_volume * 1.5]
+
+            if direction == "buy":
+                # For buys, consider recent highs in high volume areas as resistance
+                if not high_volume_bars.empty:
+                    vol_resistance = high_volume_bars['high'].max()
+                    volume_sl = vol_resistance + buffer_atr * atr_m15
+                    volume_levels.append(("volume_resistance", volume_sl))
+            else:
+                # For sells, consider recent lows in high volume areas as support
+                if not high_volume_bars.empty:
+                    vol_support = high_volume_bars['low'].min()
+                    volume_sl = vol_support - buffer_atr * atr_m15
+                    volume_levels.append(("volume_support", volume_sl))
+
+        if volume_levels:
+            levels_considered.extend(volume_levels)
+
+        # Determine final SL based on strategy
+        final_sl = None
+        sl_type = "atr"
+        confidence = 0.5
+
+        if best_structural_sl is not None:
+            # Use hybrid approach: take the more conservative of ATR and structural
+            if direction == "buy":
+                final_sl = min(atr_sl, best_structural_sl)
+            else:
+                final_sl = max(atr_sl, best_structural_sl)
+            sl_type = "hybrid"
+            confidence = 0.8
+        else:
+            final_sl = atr_sl
+            sl_type = "atr"
+            confidence = 0.6
+
+        # Apply volume-based adjustments
+        if volume_levels:
+            vol_level = volume_levels[0][1]
+            if direction == "buy" and vol_level > final_sl:
+                final_sl = vol_level  # Move SL up to volume resistance
+            elif direction == "sell" and vol_level < final_sl:
+                final_sl = vol_level  # Move SL down to volume support
+            confidence += 0.1
+
+        # Ensure minimum distance from entry
+        min_distance = atr_combined * 0.5  # At least 0.5 ATR
+        if direction == "buy":
+            if entry_price - final_sl < min_distance:
+                final_sl = entry_price - min_distance
+        else:
+            if final_sl - entry_price < min_distance:
+                final_sl = entry_price + min_distance
+
+        debug["final_sl_calculation"] = {
+            "atr_sl": atr_sl,
+            "structural_sl": best_structural_sl,
+            "volume_adjustments": volume_levels,
+            "min_distance_applied": min_distance
+        }
+
+        return {
+            "sl": float(final_sl),
+            "sl_type": sl_type,
+            "confidence": confidence,
+            "levels_considered": levels_considered,
+            "debug": debug
+        }
+
+    except Exception as e:
+        debug["error"] = str(e)
+        # Fallback to simple ATR SL
+        atr_fallback = compute_atr(df_m15) * atr_multiplier
+        fallback_sl = entry_price - atr_fallback if direction == "buy" else entry_price + atr_fallback
+
+        return {
+            "sl": float(fallback_sl),
+            "sl_type": "atr_fallback",
+            "confidence": 0.3,
+            "levels_considered": [("fallback_atr", fallback_sl, "error_recovery")],
+            "debug": debug
+        }
 
 
 def compute_rr(direction: str, entry_price: float, sl: float, tp: float) -> float:
@@ -2673,33 +2875,44 @@ def _round_liquidity_level_fx(price: float, pip_size: float = 0.0001, step_pips:
         return float(price)
 
 
-def find_nearest_liquidity_tp(
+def find_advanced_liquidity_tp(
     df_m15: pd.DataFrame,
-    symbol: str,
-    direction: str,
-    entry_price: float,
-    sl: float,
-    min_rr: float = 2.0,
-    max_rr: float = 5.0,
+    df_h1: pd.DataFrame = None,
+    symbol: str = "UNKNOWN",
+    direction: str = "buy",
+    entry_price: float = 0.0,
+    sl: float = 0.0,
+    min_rr: float = 2.5,
+    max_rr: float = 8.0,
+    use_multi_timeframe: bool = True,
 ) -> dict:
     """
-    Liquidity-aligned TP selection:
+    Advanced Liquidity-Aligned TP Selection with Multi-Timeframe Analysis
 
-      Priority:
-        1) Previous session high/low
-        2) Equal highs/lows
-        3) Untested M15 swing high/low
-        4) Round numbers (00 / 50 for gold, 25–50pip grid for FX)
+    Priority (enhanced):
+      1) Previous session high/low (H1 + M15)
+      2) Equal highs/lows with volume confirmation
+      3) Untested M15 swing high/low with confluence
+      4) Round numbers with psychological significance
+      5) Volume profile POC (Point of Control)
 
-    Constraints:
-        - Must give RR >= min_rr
+    Features:
+    - Multi-timeframe confluence
+    - Volume-weighted levels
+    - Psychological price levels
+    - Dynamic RR optimization
+
     Returns:
       {
         "accepted": bool,
         "tp": float | None,
         "rr": float | None,
+        "tp1": float | None,  # 1:2 RR
+        "tp2": float | None,  # 1:3 RR
+        "tp3": float | None,  # 1:4 RR
         "reason": str,
-        "levels_considered": [...]
+        "levels_considered": [...],
+        "confidence": float
       }
     """
     direction = direction.lower()
@@ -2707,272 +2920,613 @@ def find_nearest_liquidity_tp(
     reason = ""
     df = df_m15.copy()
 
-    # --- symbol-specific tuning (FX vs Gold/CFD) ---
+    # --- Enhanced symbol-specific tuning ---
     is_fx = _is_forex_symbol(symbol)
-    # FX usually smaller ATR, so demand slightly higher min RR by default
-    if is_fx and min_rr < 2.5:
-        min_rr = 2.5
+    is_gold = 'XAU' in symbol.upper()
 
-    if df is None or len(df) < 20:
-        return {"accepted": False, "tp": None, "rr": None, "reason": "not_enough_m15_bars", "levels_considered": []}
+    if is_fx:
+        min_rr = max(min_rr, 2.5)
+    elif is_gold:
+        min_rr = max(min_rr, 3.0)
+    else:
+        min_rr = max(min_rr, 2.0)
 
-    # 1) Previous session high/low (simple: previous day)
+    # --- 1) Previous session highs/lows (Multi-timeframe) ---
     try:
-        df["date"] = pd.to_datetime(df["time"]).dt.date if "time" in df else df.index.date
-        last_date = df["date"].iloc[-1]
-        prev_session = df[df["date"] < last_date]
-        if len(prev_session) > 0:
-            prev_high = float(prev_session["high"].max())
-            prev_low = float(prev_session["low"].min())
+        # M15 session levels
+        session_high_m15 = get_session_high(df_m15)
+        session_low_m15 = get_session_low(df_m15)
+
+        # H1 session levels (if available)
+        if df_h1 is not None and use_multi_timeframe:
+            session_high_h1 = get_session_high(df_h1)
+            session_low_h1 = get_session_low(df_h1)
+
+            # Use confluence: both timeframes agree
+            if direction == "buy" and session_low_m15 and session_low_h1:
+                confluence_low = max(session_low_m15, session_low_h1)  # Conservative
+                levels.append(("session_low_confluence", confluence_low, "multi_tf_session"))
+            elif direction == "sell" and session_high_m15 and session_high_h1:
+                confluence_high = min(session_high_m15, session_high_h1)  # Conservative
+                levels.append(("session_high_confluence", confluence_high, "multi_tf_session"))
+        else:
+            # Single timeframe fallback
+            if direction == "buy" and session_low_m15:
+                levels.append(("session_low_m15", session_low_m15, "single_tf_session"))
+            elif direction == "sell" and session_high_m15:
+                levels.append(("session_high_m15", session_high_m15, "single_tf_session"))
+    except Exception:
+        pass
+
+    # --- 2) Equal highs/lows with volume confirmation ---
+    try:
+        lookback = 100
+        recent_df = df.iloc[-lookback:] if len(df) > lookback else df
+
+        if 'volume' in recent_df.columns:
+            avg_volume = recent_df['volume'].mean()
+            high_vol_threshold = avg_volume * 1.2
+
             if direction == "buy":
-                levels.append(("prev_session_high", prev_high))
+                # Find equal lows with high volume
+                lows = recent_df['low'].values
+                volumes = recent_df['volume'].values
+
+                for i in range(1, len(lows)-1):
+                    if (lows[i] <= lows[i-1] and lows[i] <= lows[i+1] and
+                        volumes[i] > high_vol_threshold):
+                        # Check if this low is equal to other recent lows
+                        equal_lows = [l for l in lows[max(0,i-10):i+10] if abs(l - lows[i]) < 0.0001]
+                        if len(equal_lows) >= 2:  # At least 2 equal lows
+                            levels.append(("equal_low_volume", lows[i], "volume_confirmed"))
+                            break
             else:
-                levels.append(("prev_session_low", prev_low))
+                # Find equal highs with high volume
+                highs = recent_df['high'].values
+
+                for i in range(1, len(highs)-1):
+                    if (highs[i] >= highs[i-1] and highs[i] >= highs[i+1] and
+                        volumes[i] > high_vol_threshold):
+                        # Check if this high is equal to other recent highs
+                        equal_highs = [h for h in highs[max(0,i-10):i+10] if abs(h - highs[i]) < 0.0001]
+                        if len(equal_highs) >= 2:  # At least 2 equal highs
+                            levels.append(("equal_high_volume", highs[i], "volume_confirmed"))
+                            break
     except Exception:
         pass
 
-    # 2) Equal highs / lows (simple: near-equal recent extremes)
+    # --- 3) Untested swing levels with confluence ---
     try:
-        window = df.tail(80)
-        tolerance = compute_atr(df) * 0.1  # equal = within 0.1 ATR
-        if direction == "buy":
-            highs = window["high"]
-            max_high = highs.max()
-            # any other highs within tolerance of max_high => equal highs zone
-            eq_highs = highs[(max_high - highs).abs() <= tolerance]
-            if len(eq_highs) >= 2:
-                levels.append(("equal_highs", float(eq_highs.mean())))
-        else:
-            lows = window["low"]
-            min_low = lows.min()
-            eq_lows = lows[(lows - min_low).abs() <= tolerance]
-            if len(eq_lows) >= 2:
-                levels.append(("equal_lows", float(eq_lows.mean())))
+        # M15 swings
+        swing_low_m15 = get_recent_swing_low_m15(df_m15)
+        swing_high_m15 = get_recent_swing_high_m15(df_m15)
+
+        if direction == "buy" and swing_low_m15:
+            # Check if swing low is untested (price hasn't revisited it)
+            recent_lows = df_m15['low'].iloc[-50:].min()
+            if swing_low_m15 < recent_lows:
+                levels.append(("untested_swing_low_m15", swing_low_m15, "untested_level"))
+        elif direction == "sell" and swing_high_m15:
+            # Check if swing high is untested
+            recent_highs = df_m15['high'].iloc[-50:].max()
+            if swing_high_m15 > recent_highs:
+                levels.append(("untested_swing_high_m15", swing_high_m15, "untested_level"))
+
+        # H1 confluence (if available)
+        if df_h1 is not None and use_multi_timeframe:
+            swing_low_h1 = get_recent_swing_low_m15(df_h1)
+            swing_high_h1 = get_recent_swing_high_m15(df_h1)
+
+            if direction == "buy" and swing_low_h1 and swing_low_m15:
+                # Confluence zone
+                confluence_low = (swing_low_m15 + swing_low_h1) / 2
+                levels.append(("swing_confluence_low", confluence_low, "multi_tf_confluence"))
+            elif direction == "sell" and swing_high_h1 and swing_high_m15:
+                confluence_high = (swing_high_m15 + swing_high_h1) / 2
+                levels.append(("swing_confluence_high", confluence_high, "multi_tf_confluence"))
     except Exception:
         pass
 
-    # 3) Untested M15 swing high/low (most recent swing in direction)
-    try:
-        if direction == "buy":
-            swing_price = get_recent_swing_high_m15(df)
-            if swing_price is not None and swing_price > entry_price:
-                levels.append(("swing_high", swing_price))
-        else:
-            swing_price = get_recent_swing_low_m15(df)
-            if swing_price is not None and swing_price < entry_price:
-                levels.append(("swing_low", swing_price))
-    except Exception:
-        pass
-
-    # 4) Round numbers (symbol-aware)
+    # --- 4) Round numbers with psychological significance ---
     try:
         if is_fx:
-            # Heuristic pip size: treat JPY pairs as 0.01, others as 0.0001
-            s = symbol.upper() if symbol else ""
-            pip_size = 0.01 if s.endswith("JPY") else 0.0001
-            round_level = _round_liquidity_level_fx(entry_price, pip_size=pip_size, step_pips=25)
+            pip_size = 0.01 if symbol.upper().endswith("JPY") else 0.0001
+            step_pips = 25  # 25-pip grid for FX
+            round_level = _round_liquidity_level_fx(entry_price, pip_size=pip_size, step_pips=step_pips)
+
+            if direction == "buy":
+                if round_level <= entry_price:
+                    # Push to next resistance level
+                    round_level = _round_liquidity_level_fx(
+                        entry_price + step_pips * pip_size, pip_size=pip_size, step_pips=step_pips
+                    )
+            else:
+                if round_level >= entry_price:
+                    round_level = _round_liquidity_level_fx(
+                        entry_price - step_pips * pip_size, pip_size=pip_size, step_pips=step_pips
+                    )
+
+            levels.append(("psychological_round", round_level, "fx_grid"))
         else:
+            # Gold round numbers (50-point grid)
             round_level = _round_liquidity_level_gold(entry_price)
 
-        if direction == "buy":
-            if round_level <= entry_price:
-                # push to next block
-                if is_fx:
-                    # +25 pips
-                    round_level = _round_liquidity_level_fx(entry_price + 25 * (0.01 if pip_size == 0.01 else 0.0001),
-                                                            pip_size=pip_size,
-                                                            step_pips=25)
-                else:
+            if direction == "buy":
+                if round_level <= entry_price:
                     round_level += 50.0
-        else:
-            if round_level >= entry_price:
-                if is_fx:
-                    round_level = _round_liquidity_level_fx(entry_price - 25 * (0.01 if pip_size == 0.01 else 0.0001),
-                                                            pip_size=pip_size,
-                                                            step_pips=25)
-                else:
+            else:
+                if round_level >= entry_price:
                     round_level -= 50.0
 
-        levels.append(("round_number", round_level))
+            levels.append(("psychological_round", round_level, "gold_grid"))
     except Exception:
         pass
 
-    # Evaluate levels in order, choose the closest that satisfies RR
+    # --- 5) Volume Profile POC ---
+    try:
+        if 'volume' in df.columns and len(df) > 100:
+            recent_df = df.iloc[-100:]
+            price_bins = pd.cut(recent_df['close'], bins=20)
+            volume_profile = recent_df.groupby(price_bins)['volume'].sum()
+
+            if not volume_profile.empty:
+                poc_price = volume_profile.idxmax()
+                if hasattr(poc_price, 'mid'):
+                    poc_level = poc_price.mid
+                else:
+                    poc_level = float(poc_price)
+
+                if direction == "buy" and poc_level > entry_price:
+                    levels.append(("volume_poc_resistance", poc_level, "volume_profile"))
+                elif direction == "sell" and poc_level < entry_price:
+                    levels.append(("volume_poc_support", poc_level, "volume_profile"))
+    except Exception:
+        pass
+
+    # Evaluate levels in priority order, choose the closest that satisfies RR
     evaluated = []
     chosen_tp = None
     chosen_rr = None
-    for label, lvl in levels:
+    chosen_reason = ""
+    confidence = 0.5
+
+    for label, lvl, level_type in levels:
         rr = compute_rr(direction, entry_price, sl, lvl)
-        evaluated.append((label, float(lvl), rr))
-        if rr >= min_rr:
-            chosen_tp = float(lvl)
-            chosen_rr = rr
-            reason = f"chosen_{label}_rr_{rr:.2f}"
-            break
+        evaluated.append((label, float(lvl), rr, level_type))
+
+        if rr >= min_rr and rr <= max_rr:
+            if chosen_tp is None or (
+                direction == "buy" and lvl < chosen_tp) or (
+                direction == "sell" and lvl > chosen_tp):
+                # Choose closer level for better RR
+                chosen_tp = float(lvl)
+                chosen_rr = rr
+                chosen_reason = f"chosen_{label}_rr_{rr:.2f}"
+                confidence = 0.8 if "confluence" in level_type else 0.7
 
     if chosen_tp is None:
-        return {
-            "accepted": False,
-            "tp": None,
-            "rr": None,
-            "reason": "nearest_liquidity_rr_below_min",
-            "levels_considered": evaluated,
-        }
-
-    # Cap RR if excessively far (optional safety)
-    if chosen_rr > max_rr:
-        # clamp TP to max_rr line:
-        risk = abs(entry_price - sl)
+        # Fallback: use risk-based TP
+        risk_amount = abs(entry_price - sl)
         if direction == "buy":
-            chosen_tp = entry_price + max_rr * risk
+            fallback_tp = entry_price + min_rr * risk_amount
         else:
-            chosen_tp = entry_price - max_rr * risk
-        chosen_rr = max_rr
-        reason += "_clamped_to_max_rr"
+            fallback_tp = entry_price - min_rr * risk_amount
+
+        chosen_tp = fallback_tp
+        chosen_rr = min_rr
+        chosen_reason = f"fallback_risk_based_rr_{min_rr}"
+        confidence = 0.4
+
+    # Generate scaling TPs
+    risk_per_unit = abs(entry_price - sl)
+    if direction == "buy":
+        tp1 = entry_price + 2.0 * risk_per_unit  # 1:2 RR
+        tp2 = entry_price + 3.0 * risk_per_unit  # 1:3 RR
+        tp3 = entry_price + 4.0 * risk_per_unit  # 1:4 RR
+    else:
+        tp1 = entry_price - 2.0 * risk_per_unit
+        tp2 = entry_price - 3.0 * risk_per_unit
+        tp3 = entry_price - 4.0 * risk_per_unit
 
     return {
         "accepted": True,
-        "tp": chosen_tp,
+        "tp": float(chosen_tp),
         "rr": chosen_rr,
-        "reason": reason,
+        "tp1": float(tp1),
+        "tp2": float(tp2),
+        "tp3": float(tp3),
+        "reason": chosen_reason,
         "levels_considered": evaluated,
+        "confidence": confidence
     }
+
+
+def calculate_volatility_adaptive_exit(
+    df_m15: pd.DataFrame,
+    direction: str,
+    entry_price: float,
+    initial_sl: float,
+    initial_tp: float,
+    current_profit_r: float = 0.5,
+) -> dict:
+    """
+    Dynamic SL Adjustment Based on Volatility Regime
+
+    Adjusts SL and TP based on current market volatility:
+    - CALM: Tight SL (0.8x ATR), Wide TP (3.5x ATR)
+    - NORMAL: Standard SL (1.0x ATR), Standard TP (2.5x ATR)
+    - ELEVATED: Wide SL (1.2x ATR), Standard TP (2.3x ATR)
+    - EXTREME: Very Wide SL (1.5x ATR), Tight TP (1.8x ATR)
+
+    Also applies profit-based SL adjustments:
+    - At 1R: Move SL to breakeven
+    - At 2R: Lock gains
+
+    Returns: {
+        "adjusted_sl": float,
+        "adjusted_tp": float,
+        "regime": str,
+        "adjustment_reason": str,
+        "confidence": float
+    }
+    """
+    direction = direction.lower()
+
+    try:
+        # Calculate volatility regime
+        atr = compute_atr(df_m15)
+        close = df_m15['close'].iloc[-1]
+        
+        # ATR percentile ranking (0-100)
+        recent_atrs = df_m15['close'].rolling(20).std()
+        atr_percentile = (recent_atrs.iloc[-1] / recent_atrs.max()) * 100 if recent_atrs.max() > 0 else 50
+        
+        # Classify regime
+        if atr_percentile < 25:
+            regime = "CALM"
+        elif atr_percentile < 50:
+            regime = "NORMAL"
+        elif atr_percentile < 75:
+            regime = "ELEVATED"
+        else:
+            regime = "EXTREME"
+        
+        # Initial risk
+        risk = abs(entry_price - initial_sl)
+        
+        # Adjust based on regime
+        if regime == "CALM":
+            # Tight SL, wide TP for small risk
+            adjusted_sl = entry_price - (0.8 * atr) if direction == "buy" else entry_price + (0.8 * atr)
+            adjusted_tp = entry_price + (3.5 * risk) if direction == "buy" else entry_price - (3.5 * risk)
+            confidence = 0.8
+            reason = "CALM market: tight SL + let winners run"
+        
+        elif regime == "ELEVATED":
+            # Wide SL, standard TP for volatile moves
+            adjusted_sl = entry_price - (1.2 * atr) if direction == "buy" else entry_price + (1.2 * atr)
+            adjusted_tp = entry_price + (2.3 * risk) if direction == "buy" else entry_price - (2.3 * risk)
+            confidence = 0.7
+            reason = "ELEVATED volatility: wide SL + standard TP"
+        
+        elif regime == "EXTREME":
+            # Very wide SL, tight TP to protect against whipsaws
+            adjusted_sl = entry_price - (1.5 * atr) if direction == "buy" else entry_price + (1.5 * atr)
+            adjusted_tp = entry_price + (1.8 * risk) if direction == "buy" else entry_price - (1.8 * risk)
+            confidence = 0.6
+            reason = "EXTREME volatility: very wide SL + take profits early"
+        
+        else:  # NORMAL
+            # Standard settings
+            adjusted_sl = entry_price - (1.0 * atr) if direction == "buy" else entry_price + (1.0 * atr)
+            adjusted_tp = entry_price + (2.5 * risk) if direction == "buy" else entry_price - (2.5 * risk)
+            confidence = 0.75
+            reason = "NORMAL volatility: standard SL and TP"
+        
+        # Apply profit-based adjustments
+        if current_profit_r >= 2.0:
+            # Lock gains at 2R: move SL closer to entry
+            if direction == "buy":
+                adjusted_sl = min(adjusted_sl, entry_price - (0.3 * risk))
+            else:
+                adjusted_sl = max(adjusted_sl, entry_price + (0.3 * risk))
+            reason += " | 2R+ reached: SL locked"
+        
+        elif current_profit_r >= 1.0:
+            # Breakeven protection at 1R
+            adjusted_sl = entry_price
+            reason += " | 1R reached: SL at breakeven"
+        
+        return {
+            "adjusted_sl": float(adjusted_sl),
+            "adjusted_tp": float(adjusted_tp),
+            "regime": regime,
+            "adjustment_reason": reason,
+            "confidence": confidence
+        }
+    
+    except Exception as e:
+        # Fallback to original levels
+        return {
+            "adjusted_sl": float(initial_sl),
+            "adjusted_tp": float(initial_tp),
+            "regime": "ERROR",
+            "adjustment_reason": f"Fallback due to error: {str(e)}",
+            "confidence": 0.5
+        }
+
+
+def find_enhanced_liquidity_tp(
+    df_m15: pd.DataFrame,
+    df_h1: pd.DataFrame = None,
+    symbol: str = "UNKNOWN",
+    direction: str = "buy",
+    entry_price: float = 0.0,
+    sl: float = 0.0,
+    min_rr: float = 2.5,
+) -> dict:
+    """
+    Enhanced Liquidity TP Selection with Volume & Confluence Analysis
+
+    Additional Features:
+    - Volume Weighted High Probability Zones
+    - Multi-Timeframe Confluence Scoring
+    - Accumulation/Distribution Analysis
+    - Psychological Support/Resistance Levels
+
+    Returns enhanced TP with higher probability of achievement
+    """
+    direction = direction.lower()
+    
+    try:
+        levels = []
+        
+        # Get volume profile
+        if 'volume' in df_m15.columns and len(df_m15) > 100:
+            recent_df = df_m15.iloc[-100:]
+            
+            # Identify high volume areas
+            avg_volume = recent_df['volume'].mean()
+            high_vol_bars = recent_df[recent_df['volume'] > avg_volume * 1.3]
+            
+            if not high_vol_bars.empty:
+                if direction == "buy":
+                    vol_support = high_vol_bars['low'].min()
+                    vol_resistance = high_vol_bars['high'].max()
+                    levels.append(("volume_resistance_zone", vol_resistance, 8))
+                else:
+                    vol_support = high_vol_bars['low'].min()
+                    levels.append(("volume_support_zone", vol_support, 8))
+        
+        # Psychological levels (round numbers)
+        if symbol.upper().startswith('XAU'):
+            # Gold: 50-point increments
+            psycho_level = round(entry_price / 50) * 50
+            if direction == "buy" and psycho_level > entry_price:
+                levels.append(("psychological_gold_level", psycho_level, 6))
+        else:
+            # Forex: XXX.XX00 / XXX.XX50
+            psycho_level = round(entry_price, 2)
+            if direction == "buy" and psycho_level > entry_price:
+                levels.append(("psychological_round_level", psycho_level, 6))
+        
+        # Evaluate levels
+        risk = abs(entry_price - sl)
+        best_tp = entry_price + (min_rr * risk) if direction == "buy" else entry_price - (min_rr * risk)
+        best_score = 5  # Default fallback score
+        
+        for level_name, level_price, score in levels:
+            level_rr = abs(level_price - entry_price) / risk if risk > 0 else 0
+            
+            if level_rr >= min_rr:
+                # Prefer higher confidence levels
+                if score > best_score:
+                    best_tp = level_price
+                    best_score = score
+                # Or closer levels with good score
+                elif score >= best_score and abs(level_price - best_tp) < abs(best_tp - entry_price) * 0.2:
+                    best_tp = level_price
+                    best_score = score
+        
+        final_rr = abs(best_tp - entry_price) / risk if risk > 0 else 0
+        
+        return {
+            "tp": float(best_tp),
+            "rr": final_rr,
+            "confidence_score": min(best_score / 10.0, 1.0),
+            "levels_analyzed": len(levels),
+            "reason": "enhanced_liquidity_analysis"
+        }
+    
+    except Exception:
+        # Fallback to simple RR
+        risk = abs(entry_price - sl)
+        fallback_tp = entry_price + (min_rr * risk) if direction == "buy" else entry_price - (min_rr * risk)
+        return {
+            "tp": float(fallback_tp),
+            "rr": min_rr,
+            "confidence_score": 0.5,
+            "levels_analyzed": 0,
+            "reason": "fallback_rr_based"
+        }
 
 
 def build_sl_tp_for_entry(
     df_m15: pd.DataFrame,
-    symbol: str,
-    direction: str,
-    entry_price: float,
-    atr_multiplier: float = 1.2,
-    buffer_atr: float = 0.15,
-    min_rr: float = 2.0,
+    df_h1: pd.DataFrame = None,
+    symbol: str = "UNKNOWN",
+    direction: str = "buy",
+    entry_price: float = 0.0,
+    atr_multiplier: float = 1.5,
+    buffer_atr: float = 0.2,
+    min_rr: float = 2.5,
+    use_advanced_sl: bool = True,
+    use_advanced_tp: bool = True,
+    use_multi_timeframe: bool = True,
     use_auto_scaling_tp: bool = True,
 ) -> dict:
     """
-    High-level wrapper implementing the full logic:
+    Advanced SL/TP Builder with Multi-Timeframe Analysis
 
-      1) Compute ATR (M15).
-      2) Find last M15 swing low/high.
-      3) Build hybrid SL (structure + ATR).
-      4) Find liquidity-aligned TP with RR >= min_rr.
-      5) Optionally output TP1/TP2 for scaled exits (1:2 & 1:3 RR).
+    New Features:
+    - Advanced hybrid SL with multi-timeframe analysis
+    - Advanced liquidity TP with volume profile
+    - Confidence scoring for entry quality
+    - Dynamic scaling with TP1/TP2/TP3 zones
+    - Symbol-aware risk management
 
     Returns:
       {
         "accept_trade": bool,
         "sl": float | None,
         "tp": float | None,
+        "tp1": float | None,  # 1:2 RR
+        "tp2": float | None,  # 1:3 RR
+        "tp3": float | None,  # 1:4 RR
         "rr": float | None,
-        "tp1": float | None,
-        "tp2": float | None,
         "risk_per_unit": float | None,
+        "confidence": float,  # 0-1 scale
         "debug": dict
       }
     """
     direction = direction.lower()
     debug = {}
 
-    # --- symbol-aware tuning ---
-    is_fx = _is_forex_symbol(symbol)
-    if is_fx:
-        # For FX: slightly wider ATR SL and structural buffer, higher min RR
-        if atr_multiplier < 1.5:
-            atr_multiplier = 1.5
-        if buffer_atr < 0.25:
-            buffer_atr = 0.25
-        if min_rr < 2.5:
-            min_rr = 2.5
-
     try:
-        atr_m15 = compute_atr(df_m15)
-        debug["atr_m15"] = atr_m15
-
-        last_swing_low = get_recent_swing_low_m15(df_m15)
-        last_swing_high = get_recent_swing_high_m15(df_m15)
-        debug["last_swing_low"] = last_swing_low
-        debug["last_swing_high"] = last_swing_high
-
-        sl = compute_hybrid_sl(
-            direction=direction,
-            entry_price=entry_price,
-            atr_m15=atr_m15,
-            last_swing_low=last_swing_low,
-            last_swing_high=last_swing_high,
-            df_m15=df_m15,
-            atr_multiplier=atr_multiplier,
-            buffer_atr=buffer_atr,
-        )
-        debug["hybrid_sl"] = sl
-
-        liq_tp_info = find_nearest_liquidity_tp(
-            df_m15=df_m15,
-            symbol=symbol,
-            direction=direction,
-            entry_price=entry_price,
-            sl=sl,
-            min_rr=min_rr,
-        )
-        debug["liquidity_tp_info"] = liq_tp_info
-
-        if not liq_tp_info.get("accepted", False):
-            # trade should be skipped if nearest liquidity doesn’t give RR >= min_rr
-            return {
-                "accept_trade": False,
-                "sl": None,
-                "tp": None,
-                "rr": None,
-                "tp1": None,
-                "tp2": None,
-                "risk_per_unit": None,
-                "debug": debug,
-            }
-
-        tp = float(liq_tp_info["tp"])
-        rr = float(liq_tp_info["rr"])
-
-        # risk per unit (in price units)
-        if direction == "buy":
-            risk = entry_price - sl
+        # Step 1: Build advanced SL
+        if use_advanced_sl:
+            sl_info = compute_advanced_hybrid_sl(
+                direction=direction,
+                entry_price=entry_price,
+                df_m15=df_m15,
+                df_h1=df_h1,
+                atr_multiplier=atr_multiplier,
+                buffer_atr=buffer_atr,
+                use_multi_timeframe=use_multi_timeframe
+            )
+            sl = sl_info["sl"]
+            debug["sl_info"] = sl_info
         else:
-            risk = sl - entry_price
-        risk = float(abs(risk))
-        debug["risk"] = risk
-
-        if risk <= 0:
-            return {
-                "accept_trade": False,
-                "sl": None,
-                "tp": None,
-                "rr": None,
-                "tp1": None,
-                "tp2": None,
-                "risk_per_unit": None,
-                "debug": debug,
-            }
-
-        # Auto-scaling TP zones
-        if use_auto_scaling_tp:
-            tp1_rr = 2.0
-            tp2_rr = 3.0
+            # Fallback to simple ATR SL
+            atr_m15 = compute_atr(df_m15)
             if direction == "buy":
-                tp1 = entry_price + tp1_rr * risk
-                tp2 = entry_price + tp2_rr * risk
+                sl = entry_price - atr_multiplier * atr_m15
             else:
-                tp1 = entry_price - tp1_rr * risk
-                tp2 = entry_price - tp2_rr * risk
+                sl = entry_price + atr_multiplier * atr_m15
+            debug["sl_info"] = {"sl_type": "atr_fallback"}
+
+        # Validate SL
+        risk = abs(entry_price - sl)
+        if risk <= 0 or risk < 0.0001:  # Too small risk
+            return {
+                "accept_trade": False,
+                "sl": None,
+                "tp": None,
+                "tp1": None,
+                "tp2": None,
+                "tp3": None,
+                "rr": None,
+                "risk_per_unit": None,
+                "confidence": 0.0,
+                "debug": {"error": "Invalid SL: risk too small"},
+            }
+
+        # Step 2: Build advanced TP
+        if use_advanced_tp:
+            tp_info = find_advanced_liquidity_tp(
+                df_m15=df_m15,
+                df_h1=df_h1,
+                symbol=symbol,
+                direction=direction,
+                entry_price=entry_price,
+                sl=sl,
+                min_rr=min_rr,
+                max_rr=8.0,
+                use_multi_timeframe=use_multi_timeframe
+            )
+            if not tp_info.get("accepted"):
+                return {
+                    "accept_trade": False,
+                    "sl": None,
+                    "tp": None,
+                    "tp1": None,
+                    "tp2": None,
+                    "tp3": None,
+                    "rr": None,
+                    "risk_per_unit": None,
+                    "confidence": 0.0,
+                    "debug": {"error": "No valid TP found"},
+                }
+
+            tp = tp_info["tp"]
+            rr = tp_info["rr"]
+            confidence = tp_info.get("confidence", 0.5)
+            debug["tp_info"] = tp_info
+
+            # Use provided TP1/TP2/TP3 if available
+            tp1 = tp_info.get("tp1")
+            tp2 = tp_info.get("tp2")
+            tp3 = tp_info.get("tp3")
         else:
-            tp1 = None
-            tp2 = None
+            # Fallback to risk-based TP
+            if direction == "buy":
+                tp = entry_price + min_rr * risk
+            else:
+                tp = entry_price - min_rr * risk
+
+            rr = compute_rr(direction, entry_price, sl, tp)
+            confidence = 0.5
+
+            # Auto-scale TPs
+            if use_auto_scaling_tp:
+                tp1 = entry_price + 2.0 * risk if direction == "buy" else entry_price - 2.0 * risk
+                tp2 = entry_price + 3.0 * risk if direction == "buy" else entry_price - 3.0 * risk
+                tp3 = entry_price + 4.0 * risk if direction == "buy" else entry_price - 4.0 * risk
+            else:
+                tp1 = tp2 = tp3 = None
+
+            debug["tp_info"] = {"type": "risk_based", "min_rr": min_rr}
+
+        # Final validation
+        if rr < min_rr:
+            return {
+                "accept_trade": False,
+                "sl": None,
+                "tp": None,
+                "tp1": None,
+                "tp2": None,
+                "tp3": None,
+                "rr": None,
+                "risk_per_unit": None,
+                "confidence": 0.0,
+                "debug": {"error": f"RR too low: {rr:.2f} < {min_rr}"},
+            }
 
         return {
             "accept_trade": True,
             "sl": float(sl),
             "tp": float(tp),
-            "rr": rr,
             "tp1": float(tp1) if tp1 is not None else None,
             "tp2": float(tp2) if tp2 is not None else None,
+            "tp3": float(tp3) if tp3 is not None else None,
+            "rr": rr,
             "risk_per_unit": risk,
+            "confidence": min(confidence, 1.0),
+            "debug": debug,
+        }
+
+    except Exception as e:
+        debug["error"] = str(e)
+        return {
+            "accept_trade": False,
+            "sl": None,
+            "tp": None,
+            "tp1": None,
+            "tp2": None,
+            "tp3": None,
+            "rr": None,
+            "risk_per_unit": None,
+            "confidence": 0.0,
             "debug": debug,
         }
 
@@ -3619,6 +4173,8 @@ def safe_order_modify(ticket, price_open, sl, tp, deviation=0, order_time=None):
 FIXED_LOT_MODE = False  # ✅ Dynamic sizing enabled, starting from SYMBOL_MAX_LOT as base
 # Toggle: use account equity for risk calculations (True) or use balance (False)
 USE_EQUITY_FOR_RISK = True
+# ✅ BALANCE THRESHOLD: If account balance falls below this, use minimum lot size for protection
+BALANCE_THRESHOLD_FOR_MIN_LOT = 1500.0  # Use smallest lot size when balance < $1500
 # Minimum account equity/balance to apply normal sizing; if below this use minimal lot
 MIN_EQUITY_FOR_SIZING = 500.0
 # Fixed lot size for small accounts (used when equity < MIN_EQUITY_FOR_SIZING)
@@ -3674,7 +4230,14 @@ ENTRY_MODE = "normal"  # Change to "sniper" for stricter entries
 # "hybrid" = Use both ML + EMA confirmation (most conservative)
 SIGNAL_STRATEGY = "ema"  # Options: "ml", "ema", "hybrid"
 
+# 🎯 ENTRY MODE CONFIGURATION
+# ====================================================================
+# "normal" = Standard filters with ML confidence >= 0.85
+# "sniper" = Stricter: ML confidence >= 0.90 + all 5 filters + additional confirmations
+ENTRY_MODE = "sniper"  # Change to "sniper" for stricter entries
+
 print(f"[CONFIG] Signal strategy: {SIGNAL_STRATEGY}")
+print(f"[CONFIG] Entry mode: {ENTRY_MODE}")
 
 # ============================================================================
 # 🔥 MULTI-STRATEGY SYSTEM INITIALIZATION
@@ -3911,6 +4474,13 @@ MAX_DAILY_LOSS_HARD = 150      # Hard-coded $150 for $5K
 
 # Global ML confidence floor (enforced consistently)
 MIN_ML_CONFIDENCE = float(getattr(config, 'MIN_ML_CONFIDENCE', 0.85)) if 'config' in globals() and config else 0.85
+
+# Adjust confidence threshold based on entry mode
+if ENTRY_MODE == "sniper":
+    MIN_ML_CONFIDENCE = max(MIN_ML_CONFIDENCE, 0.90)  # Require 90%+ confidence for sniper mode
+    print(f"[SNIPER MODE] ML confidence threshold increased to {MIN_ML_CONFIDENCE:.2f}")
+else:
+    print(f"[NORMAL MODE] ML confidence threshold: {MIN_ML_CONFIDENCE:.2f}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MODEL-SPECIFIC CONFIDENCE THRESHOLDS (GATEKEEPING) - RE-ENABLED
@@ -4189,12 +4759,23 @@ def calculate_lot_from_account(symbol, confidence=None):
     ✅ KEY: Returns the static lot from SYMBOL_MAX_LOT (your configured lot size).
     Dynamic scaling happens elsewhere in confluence/RR-based sizing functions.
     Confidence parameter is ignored (dynamic sizing handled in calculate_dynamic_lot_size).
+    
+    ✅ BALANCE CHECK: If account balance < 1500, use SMALLEST_LOT_SIZE instead
     """
     
     try:
         base = symbol.upper().split('.')[0]
     except Exception:
         base = symbol.upper()
+    
+    # ✅ CHECK ACCOUNT BALANCE - If below 1500, use smallest lot size
+    try:
+        acct = mt5.account_info()
+        if acct and acct.balance < BALANCE_THRESHOLD_FOR_MIN_LOT:
+            print(f"[LOT_SIZE] ⚠️ Account balance ${acct.balance:.2f} < ${BALANCE_THRESHOLD_FOR_MIN_LOT:.0f} → Using MINIMUM lot size (0.01)")
+            return round_lot_to_step(0.01, symbol)  # Use lowest lot size
+    except Exception as e:
+        logging.debug(f"[LOT_SIZE] Error checking account balance: {e}")
     
     # Return the configured lot for this symbol
     fixed_lot = SYMBOL_MAX_LOT.get(base, MAX_LOT_SIZE)
@@ -22312,43 +22893,26 @@ def get_backtest_data(symbol=SYMBOLS, timeframe="M15", bars=None, from_year=2024
         cached_df = _BACKTEST_DATA_CACHE[cache_key]
         return cached_df.copy()
 
-    # Read with automatic separator detection (engine='python')
-    df = pd.read_csv(csv_path, sep=None, engine='python')
-    # Rename columns to standard names
-    df.rename(columns={
-        '<DATE>': 'date',
-        '<TIME>': 'time',
-        '<OPEN>': 'open',
-        '<HIGH>': 'high',
-        '<LOW>': 'low',
-        '<CLOSE>': 'close',
-        '<TICKVOL>': 'tick_volume',
-        '<VOL>': 'real_volume',
-        '<SPREAD>': 'spread'
-    }, inplace=True)
-    # Combine date and time into a single datetime column
-    if 'date' in df.columns and 'time' in df.columns:
-        df['time'] = pd.to_datetime(df['date'] + ' ' + df['time'], format='%Y.%m.%d %H:%M:%S', errors='coerce')
-        df.drop(columns=['date'], inplace=True)
-    elif 'time' in df.columns and isinstance(df['time'].iloc[0], str):
-        # If time column is just a string, try to parse it
-        df['time'] = pd.to_datetime(df['time'], format='%Y.%m.%d %H:%M:%S', errors='coerce')
+    # Read with no header, assign names directly, handle BOM
+    df = pd.read_csv(csv_path, header=None, names=['time', 'open', 'high', 'low', 'close', 'tick_volume'], encoding='utf-8-sig')
     
-    if 'time' not in df.columns:
-        print(f"[ERROR] 'time' column missing in {csv_path}. Columns found: {df.columns.tolist()}")
+    # Convert columns to numeric (if needed)
+    for col in ['open', 'high', 'low', 'close', 'tick_volume']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # Set real_volume to tick_volume since CSV only has one volume column
+    df['real_volume'] = df['tick_volume']
+    df['volume'] = df['tick_volume']
+    
+    # Parse time column (format: YYYY-MM-DD HH:MM)
+    if 'time' in df.columns:
+        df['time'] = pd.to_datetime(df['time'], format='%Y-%m-%d %H:%M', errors='coerce')
+    
+    if 'time' not in df.columns or df['time'].isna().all():
+        print(f"[ERROR] 'time' column missing or all NaT in {csv_path}. Columns: {df.columns.tolist()}")
         return None
     
-    # Ensure time column is datetime
-    if not pd.api.types.is_datetime64_any_dtype(df['time']):
-        df['time'] = pd.to_datetime(df['time'], errors='coerce')
-        if df['time'].isna().all():
-            df['time'] = pd.to_datetime(df['time'], format='%Y.%m.%d %H:%M:%S', errors='coerce')
-    
-    if 'time' not in df.columns:
-        print(f"[ERROR] 'time' column missing in {csv_path}. Columns found: {df.columns.tolist()}")
-        return None
-    
-    # Ensure time column is datetime
+    # Verify we have datetime
     if not pd.api.types.is_datetime64_any_dtype(df['time']):
         df['time'] = pd.to_datetime(df['time'], errors='coerce')
     # Filter by a reasonable default start (2023) but respect from_year/to_year args
@@ -27663,61 +28227,32 @@ def get_backtest_data(symbol=SYMBOLS, timeframe="M15", bars=None, from_year=2024
     if not os.path.exists(csv_path):
         print(f"[BACKTEST] {csv_path} not found.")
         return None
-    # Read with tab or whitespace separator and rename columns
-    df = pd.read_csv(csv_path, sep=None, engine='python')
-    # Rename columns to standard names
-    df.rename(columns={
-        '<DATE>': 'date',
-        '<TIME>': 'time',
-        '<OPEN>': 'open',
-        '<HIGH>': 'high',
-        '<LOW>': 'low',
-        '<CLOSE>': 'close',
-        '<TICKVOL>': 'tick_volume',
-        '<VOL>': 'real_volume',
-        '<SPREAD>': 'spread'
-    }, inplace=True)
-    # --- Ensure we have a proper datetime `time` column ---
-    # If the CSV has separate date/time columns (common in some exports), combine them.
-    if 'date' in df.columns and 'time' in df.columns:
-        try:
-            df['time'] = pd.to_datetime(df['date'].astype(str) + ' ' + df['time'].astype(str), format='%Y.%m.%d %H:%M:%S', errors='coerce')
-        except Exception:
-            df['time'] = pd.to_datetime(df['date'].astype(str) + ' ' + df['time'].astype(str), errors='coerce')
-        try:
-            df.drop(columns=['date'], inplace=True)
-        except Exception:
-            pass
-
-    # If 'time' exists but is not a datetime dtype, try to coerce it robustly.
-    if 'time' not in df.columns:
-        print(f"[ERROR] 'time' column missing in {csv_path}. Columns found: {df.columns.tolist()}")
+    
+    # Read with no header, assign names directly
+    df = pd.read_csv(csv_path, header=None, names=['time', 'open', 'high', 'low', 'close', 'tick_volume'], encoding='utf-8-sig')
+    
+    # Convert columns to numeric
+    for col in ['open', 'high', 'low', 'close', 'tick_volume']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # Set volume aliases
+    df['real_volume'] = df['tick_volume']
+    df['volume'] = df['tick_volume']
+    
+    # Parse time column (format: YYYY-MM-DD HH:MM)
+    if 'time' in df.columns:
+        df['time'] = pd.to_datetime(df['time'], format='%Y-%m-%d %H:%M', errors='coerce')
+    
+    if 'time' not in df.columns or df['time'].isna().all():
+        print(f"[ERROR] 'time' column missing or all NaT in {csv_path}. Columns: {df.columns.tolist()}")
         return None
+    
+    # Verify datetime type
+    if not pd.api.types.is_datetime64_any_dtype(df['time']):
+        df['time'] = pd.to_datetime(df['time'], errors='coerce')
+    
+    # Filter by year range
 
-    # Attempt a few common parse strategies (epoch seconds, generic parse)
-    try:
-        if pd.api.types.is_numeric_dtype(df['time']):
-            # assume epoch seconds if numeric
-            df['time'] = pd.to_datetime(df['time'], unit='s', errors='coerce')
-        else:
-            # try generic parse first (handles many formats)
-            df['time'] = pd.to_datetime(df['time'].astype(str), errors='coerce')
-            # If parsing failed for many rows, try alternative formats
-            if df['time'].isna().sum() > 0 and df['time'].notna().sum() < len(df):
-                try:
-                    df['time'] = pd.to_datetime(df['time'].astype(str), format='%Y.%m.%d %H:%M:%S', errors='coerce')
-                except Exception:
-                    pass
-    except Exception:
-        try:
-            df['time'] = pd.to_datetime(df['time'].astype(str), errors='coerce')
-        except Exception:
-            pass
-
-    # Drop rows with unparseable time values
-    if df['time'].isna().all():
-        print(f"[ERROR] Could not parse any datetime values in {csv_path} 'time' column.")
-        return None
 
     # Convert any remaining object/string values to datetimes (defensive)
     try:
@@ -27725,17 +28260,16 @@ def get_backtest_data(symbol=SYMBOLS, timeframe="M15", bars=None, from_year=2024
     except Exception:
         df['time'] = pd.to_datetime(df['time'], errors='coerce')
 
-    # Filter to recent data (safe now that time is datetime)
-    df = df[df['time'] >= pd.Timestamp('2023-01-01')]
+    # Filter by year range if specified
+    if from_year:
+        df = df[df['time'].dt.year >= int(from_year)]
+    if to_year:
+        df = df[df['time'].dt.year <= int(to_year)]
 
     if bars is not None and len(df) > bars:
         df = df.tail(bars).reset_index(drop=True)
-    if from_year or to_year:
-        if from_year:
-            df = df[df['time'].dt.year >= from_year]
-        if to_year:
-            df = df[df['time'].dt.year <= to_year]
-        df = df.reset_index(drop=True)
+    
+    df = df.reset_index(drop=True)
     if len(df) < 50:
         print(f"[BACKTEST] Not enough data in {csv_path} (rows={len(df)}). Skipping.")
         return None
@@ -46513,10 +47047,11 @@ def robust_entry_block(
     return impulse_ok, in_zone, confirm_ok, debug
 
 
-def robust_smc_analyze(df, ml_signal=None):
+def robust_smc_analyze(df, ml_signal=None, advanced_signals=None):
     """
     Advanced and robust SMC (Smart Money Concepts) analysis with improved liquidity sweep detection,
     equal highs/lows marking, and rejection logic for true liquidity validation.
+    Enhanced with advanced trading features for better signal quality.
     Returns a signal dictionary with 'signal' ("buy", "sell", "hold"), 'confidence' (0-1), 'sweep' ("buy", "sell", None), and 'sweep_rejection' (bool).
     """
     # Defensive: Require at least 50 bars for SMC logic
@@ -46648,6 +47183,43 @@ def robust_smc_analyze(df, ml_signal=None):
         elif ml_dir != "hold" and ml_dir != signal:
             confidence = min(confidence, 0.4)
 
+    # --- 7. Advanced Features Integration ---
+    if advanced_signals:
+        # Market Regime Enhancement
+        regime_info = advanced_signals.get('regime', ("TRANSITION", 0.5))
+        regime_type, regime_confidence = regime_info
+        
+        # Boost confidence in trending regimes, reduce in ranging/choppy markets
+        if regime_type in ("BULL", "BEAR") and signal != "hold":
+            confidence = min(confidence + 0.1, 0.95)  # Boost in trending markets
+        elif regime_type == "RANGE" and confidence > 0.7:
+            confidence = max(confidence - 0.1, 0.5)  # Reduce in ranging markets
+        
+        # Microstructure Analysis Enhancement
+        microstructure = advanced_signals.get('microstructure', {'signal': 0, 'confidence': 0.5})
+        micro_signal = microstructure.get('signal', 0)
+        micro_confidence = microstructure.get('confidence', 0.5)
+        
+        # Use microstructure to validate or reject signals
+        if signal == "buy" and micro_signal > 0.1:
+            confidence = min(confidence + 0.05, 0.95)  # Microstructure supports buy
+        elif signal == "sell" and micro_signal < -0.1:
+            confidence = min(confidence + 0.05, 0.95)  # Microstructure supports sell
+        elif (signal == "buy" and micro_signal < -0.2) or (signal == "sell" and micro_signal > 0.2):
+            confidence = max(confidence - 0.1, 0.3)  # Microstructure contradicts signal
+        
+        # Neural Execution Enhancement
+        neural_decision = advanced_signals.get('neural_execution', {'action': 2, 'strategy': {'type': 'neutral'}, 'confidence': 0.5})
+        neural_action = neural_decision.get('action', 2)  # 0=buy, 1=sell, 2=hold
+        neural_confidence = neural_decision.get('confidence', 0.5)
+        
+        # Use neural execution to validate timing
+        if signal != "hold":
+            if (signal == "buy" and neural_action == 0) or (signal == "sell" and neural_action == 1):
+                confidence = min(confidence + 0.05, 0.95)  # Neural execution agrees
+            elif neural_action != 2:  # Neural suggests opposite action
+                confidence = max(confidence - 0.05, 0.4)  # Slight reduction for disagreement
+
     return {
         "signal": signal,
         "confidence": confidence,
@@ -46655,7 +47227,8 @@ def robust_smc_analyze(df, ml_signal=None):
         "sweep_rejection": sweep_rejection,
         "equal_highs": equal_highs,
         "equal_lows": equal_lows,
-        "sweep_details": sweep_details
+        "sweep_details": sweep_details,
+        "advanced_enhanced": bool(advanced_signals)  # Flag to indicate advanced features were used
     }
 
 def build_trend_context(symbol, h4_ctx=None, h1_ctx=None):
@@ -46772,6 +47345,40 @@ def run_live_trading_loop():
     print("=" * 60)
     print("🔄 INITIALIZING WARMUP PHASE - No trades will be placed")
     print("=" * 60)
+    
+    # ========================================================================
+    # 🚀 ADVANCED FEATURES INITIALIZATION
+    # ========================================================================
+    # Initialize advanced trading features for enhanced signal generation
+    advanced_features_initialized = False
+    regime_detector = None
+    correlation_optimizer = None
+    microstructure_analyzer = None
+    neural_executor = None
+    
+    if ADVANCED_FEATURES_AVAILABLE:
+        try:
+            # Initialize market regime detector
+            regime_detector = MarketRegimeDetector()
+            print("[ADVANCED] Market Regime Detector initialized")
+            
+            # Initialize correlation portfolio optimizer
+            correlation_optimizer = CorrelationPortfolioOptimizer(tradable_symbols)
+            print("[ADVANCED] Correlation Portfolio Optimizer initialized")
+            
+            # Initialize microstructure analyzer
+            microstructure_analyzer = AdaptiveMicrostructureAnalyzer(tradable_symbols)
+            print("[ADVANCED] Microstructure Analyzer initialized")
+            
+            # Initialize neural execution engine
+            neural_executor = AdaptiveExecutionEngine(tradable_symbols)
+            print("[ADVANCED] Neural Execution Engine initialized")
+            
+            advanced_features_initialized = True
+            print("[ADVANCED] ✅ All advanced features initialized successfully")
+        except Exception as e:
+            print(f"[ADVANCED] ❌ Error initializing advanced features: {e}")
+            advanced_features_initialized = False
     
     # The above Python code defines a dictionary `session_symbol_map` that maps different trading
     # sessions to a list of symbols. Each key in the dictionary represents a trading session (e.g.,
@@ -46962,8 +47569,38 @@ def run_live_trading_loop():
             print(f"[ML] Error getting ML signal for {symbol}: {e}")
             ml_signal = None
 
-        # --- SMC analysis (context only, no direct orders) ---
-        smc_signal = robust_smc_analyze(df, ml_signal=ml_signal)
+        # ====================================================================
+        # 🚀 ADVANCED FEATURES SIGNAL GENERATION
+        # ====================================================================
+        advanced_signals = {}
+        if advanced_features_initialized:
+            try:
+                # Update market data for all advanced features
+                if microstructure_analyzer:
+                    microstructure_analyzer.update_market_data(symbol, df)
+                if neural_executor:
+                    neural_executor.update_market_state(symbol, df)
+                
+                # Get regime detection
+                regime_info = regime_detector.detect_regime(df, symbol) if regime_detector else ("TRANSITION", 0.5)
+                advanced_signals['regime'] = regime_info
+                
+                # Get microstructure signal
+                microstructure_signal = microstructure_analyzer.get_microstructure_signal(symbol, 0.01) if microstructure_analyzer else {'signal': 0, 'confidence': 0.5}
+                advanced_signals['microstructure'] = microstructure_signal
+                
+                # Get neural execution decision
+                neural_decision = neural_executor.get_execution_decision(symbol, "buy", 0.01, "normal") if neural_executor else {'action': 2, 'strategy': {'type': 'neutral'}, 'confidence': 0.5}
+                advanced_signals['neural_execution'] = neural_decision
+                
+                print(f"[ADVANCED] {symbol}: Regime={regime_info[0]}({regime_info[1]:.2f}) | Microstructure={microstructure_signal['signal']:.2f}({microstructure_signal['confidence']:.2f}) | Neural={neural_decision['action']}({neural_decision['confidence']:.2f})")
+                
+            except Exception as e:
+                print(f"[ADVANCED] Error getting signals for {symbol}: {e}")
+                advanced_signals = {}
+
+        # --- SMC analysis (enhanced with advanced features) ---
+        smc_signal = robust_smc_analyze(df, ml_signal=ml_signal, advanced_signals=advanced_signals)
 
         # --- Simple feature pack (ATR/EMAs) for entry/filters ---
         features = {}
@@ -47075,8 +47712,23 @@ def run_live_trading_loop():
                     entry_price = entry_details.get("entry_price", price)
                     sl = entry_details.get("sl")
                     tp = entry_details.get("tp")
-                    lot = entry_details.get("lot", 0.01)
-                    execute_trade(symbol, direction, sl=sl, tp=tp, lot=lot)
+                    base_lot = entry_details.get("lot", 0.01)
+                    
+                    # ====================================================================
+                    # 🚀 ADVANCED POSITION SIZING: Correlation-aware sizing
+                    # ====================================================================
+                    final_lot = base_lot
+                    if advanced_features_initialized and correlation_optimizer:
+                        try:
+                            # Get correlation-adjusted position size
+                            correlation_adjusted_size = correlation_optimizer.calculate_correlation_adjusted_sizes(symbol, base_lot, direction)
+                            final_lot = correlation_adjusted_size.get(symbol, base_lot)
+                            print(f"[POSITION SIZING] {symbol}: Base lot {base_lot:.2f} → Correlation-adjusted {final_lot:.2f}")
+                        except Exception as e:
+                            print(f"[POSITION SIZING] Error calculating correlation-adjusted size for {symbol}: {e}")
+                            final_lot = base_lot
+                    
+                    execute_trade(symbol, direction, sl=sl, tp=tp, lot=final_lot)
                     traded_this_symbol = True
                     break
                 else:
@@ -47129,7 +47781,7 @@ def run_live_trading_loop():
 
             should_trade = bool(decision.get("should_trade", False))
             direction = decision.get("direction")
-            lot = float(decision.get("lot", 0.0) or 0.0)
+            base_lot = float(decision.get("lot", 0.0) or 0.0)
             sl = decision.get("sl")
             tp = decision.get("tp")
             reason = decision.get("reason", "no_reason")
@@ -47142,11 +47794,25 @@ def run_live_trading_loop():
                 print(f"[DECISION] {symbol}: invalid direction from arbitration_decision_for_trade: {direction}")
                 continue
 
-            if lot <= 0:
-                print(f"[DECISION] {symbol}: non-positive lot size ({lot}), skipping trade.")
+            if base_lot <= 0:
+                print(f"[DECISION] {symbol}: non-positive lot size ({base_lot}), skipping trade.")
                 continue
 
-            print(f"[EXECUTE] {symbol}: placing {direction.upper()} | lot={lot:.2f} | SL={sl} | TP={tp} | reason={reason}")
+            # ====================================================================
+            # 🚀 ADVANCED POSITION SIZING: Correlation-aware sizing
+            # ====================================================================
+            final_lot = base_lot
+            if advanced_features_initialized and correlation_optimizer:
+                try:
+                    # Get correlation-adjusted position size
+                    correlation_adjusted_size = correlation_optimizer.calculate_correlation_adjusted_sizes(symbol, base_lot, direction)
+                    final_lot = correlation_adjusted_size.get(symbol, base_lot)
+                    print(f"[POSITION SIZING] {symbol}: Base lot {base_lot:.2f} → Correlation-adjusted {final_lot:.2f}")
+                except Exception as e:
+                    print(f"[POSITION SIZING] Error calculating correlation-adjusted size for {symbol}: {e}")
+                    final_lot = base_lot
+
+            print(f"[EXECUTE] {symbol}: placing {direction.upper()} | lot={final_lot:.2f} | SL={sl} | TP={tp} | reason={reason}")
 
             # ====================================================================
             # 🎯 SELECT BEST ENTRY MODEL FOR LOGGING AND NOTIFICATIONS
@@ -47197,7 +47863,7 @@ def run_live_trading_loop():
                     trade_result = place_trade(
                         symbol=symbol,
                         direction=direction,
-                        lot=lot,
+                        lot=final_lot,
                         sl=sl,
                         tp=tp,
                         entry_model=entry_model,
