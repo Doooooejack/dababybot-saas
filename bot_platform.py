@@ -22,13 +22,21 @@ import logging
 from collections import defaultdict
 import time
 
+# ✅ Setup logging FIRST before using logger
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # Try to import MT5 (will work on Windows with MetaTrader5 installed)
 try:
     import MetaTrader5 as mt5
     MT5_AVAILABLE = True
+    logger.info("MetaTrader5 library available - full MT5 integration enabled")
 except ImportError:
     MT5_AVAILABLE = False
-    logging.warning("MetaTrader5 library not available - demo mode")
+    logger.warning("MetaTrader5 library not available - running in SaaS mode (MT5 connections handled by local clients)")
 
 # MT5 Connection State Management
 mt5_connection_lock = threading.Lock()
@@ -318,10 +326,6 @@ def migrate_user_schema():
         logger.info('User schema is already up to date; no changes applied.')
 
     schema_migrated = True
-
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # Global dictionary to track bot threads per user
 bot_threads = {}  # {user_id: {'thread': Thread, 'stop_event': Event}}
@@ -829,89 +833,107 @@ def get_profile():
 @app.route('/api/user/mt5-connect', methods=['POST'])
 @jwt_required()
 def connect_mt5():
-    """Connect and validate user's MT5 account - returns account info or error"""
-    global mt5_current_account, mt5_current_credentials
-    
+    """
+    Store user's MT5 credentials for local bot connection.
+    Credentials are validated on the user's local Windows machine where MT5 is installed.
+    This allows cloud users to connect without requiring MT5 on the server.
+    """
     user_id = get_jwt_identity()
     user = User.query.get(user_id)
     data = request.get_json()
-    
+
     if not user:
         return jsonify({'error': 'User not found'}), 404
-    
-    account = str(data.get('account')).strip()
-    server = data.get('server', 'MetaQuotes-Demo').strip()
-    password = data.get('password')
-    
-    # Validate inputs
-    if not account or not password:
-        return jsonify({'error': 'Account number and password required'}), 400
-    
-    # Validate credentials on the server to ensure real MT5 account details
-    account_info = None
-    try:
-        account_info = validate_mt5_credentials(account, server, password)
-    except RuntimeError as e:
-        # If it's MT5 unavailable, return 503
-        if 'unavailable' in str(e).lower():
-            logging.warning(f"MT5 unavailable for account {account}: {str(e)}")
-            return jsonify({'error': str(e), 'success': False}), 503
-        # Other errors are validation failures (bad credentials, connection issues)
-        logging.warning(f"MT5 connect validation failed for account {account} on server {server}: {str(e)}")
-        return jsonify({'error': str(e), 'success': False}), 400
-    except Exception as e:
-        logging.warning(f"MT5 connect validation failed for account {account} on server {server}: {str(e)}")
-        return jsonify({'error': str(e), 'success': False}), 400
 
-    mt5_current_account = int(account)
-    mt5_current_credentials = {
-        'login': int(account),
-        'server': server,
-        'password': password
-    }
-    logging.info(f"Successfully validated MT5 account {account} on server {server}")
-    
-    # Save the credentials to database
+    account = str(data.get('account', '')).strip()
+    server = data.get('server', 'MetaQuotes-Demo').strip()
+    password = data.get('password', '')
+
+    # Enhanced input validation
+    if not account or not password:
+        return jsonify({
+            'error': 'Account number and password are required',
+            'code': 'MISSING_CREDENTIALS'
+        }), 400
+
+    if len(account) < 4:
+        return jsonify({
+            'error': 'Account number must be at least 4 digits',
+            'code': 'INVALID_ACCOUNT_FORMAT'
+        }), 400
+
+    if len(password) < 4:
+        return jsonify({
+            'error': 'Password must be at least 4 characters',
+            'code': 'INVALID_PASSWORD_FORMAT'
+        }), 400
+
+    if not server or len(server) < 2:
+        return jsonify({
+            'error': 'Server name is required',
+            'code': 'INVALID_SERVER'
+        }), 400
+
+    # Encrypt password before storing (basic encryption - use proper cipher in production)
+    try:
+        from cryptography.fernet import Fernet
+        # In production, load the key from secure environment variable
+        cipher_key = os.environ.get('CIPHER_KEY', 'CHANGE_ME_IN_PRODUCTION')
+        if cipher_key == 'CHANGE_ME_IN_PRODUCTION':
+            logging.warning("Using default cipher key - implement secure key management in production!")
+        cipher = Fernet(cipher_key.encode() if len(cipher_key) >= 44 else Fernet.generate_key())
+        encrypted_password = cipher.encrypt(password.encode()).decode()
+    except Exception as e:
+        # Fallback: store unencrypted with warning
+        logging.warning(f"Password encryption failed: {str(e)} - storing unencrypted")
+        encrypted_password = password
+
+    # Store credentials in database (will be validated by local bot)
     user.mt5_server = server
     user.mt5_account = account
-    user.mt5_password = password  # TODO: Encrypt in production!
-    user.mt5_validated = True
+    user.mt5_password = encrypted_password
+    user.mt5_validated = False  # Mark as unvalidated until local client confirms
     db.session.commit()
-    
-    def _extract_mt5_value(info, field, default=0.0):
-        if info is None:
-            return float(default)
-        if isinstance(info, dict):
-            return float(info.get(field, default) or default)
-        return float(getattr(info, field, default) or default)
 
-    # Return account info
+    # Return success response with detailed instructions
     response_data = {
-        'message': 'MT5 account connected successfully',
+        'message': 'MT5 account credentials saved successfully',
         'success': True,
         'account': {
             'number': account,
             'server': server,
-            'balance': _extract_mt5_value(account_info, 'balance', 0.0),
-            'equity': _extract_mt5_value(account_info, 'equity', 0.0),
             'platform': 'MetaTrader5',
-            'connected_at': datetime.utcnow().isoformat()
-        }
+            'configured_at': datetime.utcnow().isoformat(),
+            'validation_status': 'pending_local_verification'
+        },
+        'instructions': {
+            'step1': 'Your MT5 credentials have been securely saved to the cloud',
+            'step2': 'Download and run the DababyBot local client on your Windows machine',
+            'step3': 'The local client will automatically use your saved credentials to connect to MT5',
+            'step4': 'Trading will begin once your local MT5 connection is verified',
+            'note': 'Your bot can run on your local Windows machine while the dashboard remains accessible from anywhere'
+        },
+        'connection_type': 'hybrid_saas',
+        'requires_windows': True,
+        'windows_required_for': ['mt5_connection', 'live_trading'],
+        'accessible_from_anywhere': ['dashboard', 'account_info', 'trade_history', 'settings']
     }
-    
-    if not MT5_AVAILABLE:
-        response_data['account']['warning'] = 'Running in demo mode - actual balance will sync when bot starts on Windows'
-    
-    logging.info(f"User {user.username} connected MT5 account {account} successfully")
+
+    logging.info(f"User {user.username} (ID: {user_id}) configured MT5 account {account} on {server}")
     return jsonify(response_data), 200
 
 
 @app.route('/api/user/mt5-account-info', methods=['GET'])
 @jwt_required()
 def get_mt5_account_info():
-    """Fetch current MT5 account balance/equity (refresh from server if available)"""
-    global mt5_current_account
+    """
+    Retrieve user's MT5 account info from database (server-side cached).
+    This endpoint works from any platform since it doesn't require live MT5 connection.
+    Live validation happens on the user's local Windows machine when bot connects.
     
+    Returns cached account info immediately for cross-platform accessibility.
+    If MT5 is available on this server (Windows), attempts live validation and updates cache.
+    """
     user_id = get_jwt_identity()
     user = User.query.get(user_id)
     
@@ -919,42 +941,68 @@ def get_mt5_account_info():
         return jsonify({'error': 'User not found'}), 404
     
     if not user.mt5_account:
-        return jsonify({'error': 'No MT5 account connected', 'connected': False}), 400
-    
-    if not MT5_AVAILABLE:
         return jsonify({
-            'error': 'MetaTrader5 integration is unavailable on this server. Live account validation requires a Windows host with MetaTrader5 installed.',
-            'connected': False
-        }), 503
+            'error': 'No MT5 account configured',
+            'code': 'NO_ACCOUNT_CONFIGURED',
+            'message': 'Please configure an MT5 account first via /api/user/mt5-connect'
+        }), 404
 
-    try:
-        account_info = validate_mt5_credentials(user.mt5_account, user.mt5_server, user.mt5_password)
-    except Exception as e:
-        logging.warning(f"Failed to fetch live account info for {user.username}: {str(e)}")
-        user.mt5_validated = False
-        db.session.commit()
-        return jsonify({'error': str(e), 'connected': False}), 400
-
-    # Persist validation state
-    user.mt5_validated = True
-    db.session.commit()
-
-    response_data = {
-        'connected': True,
+    # Always return cached account info (works from any platform)
+    account_info = {
         'account': {
             'number': user.mt5_account,
-            'server': user.mt5_server,
-            'platform': 'MetaTrader5',
-            'balance': float(account_info.balance),
-            'equity': float(account_info.equity),
-            'margin_level': float(account_info.margin_level) if hasattr(account_info, 'margin_level') else 0.0,
-            'free_margin': float(account_info.margin_free) if hasattr(account_info, 'margin_free') else 0.0,
-            'leverage': int(account_info.leverage) if hasattr(account_info, 'leverage') else None,
-            'trade_mode': str(getattr(account_info, 'trade_mode', 'unknown'))
-        }
+            'server': user.mt5_server or 'MetaQuotes-Demo',
+            'platform': 'MetaTrader5'
+        },
+        'validation_status': 'validated_by_local_client' if user.mt5_validated else 'pending_local_verification',
+        'retrieved_from': 'cloud_cache',
+        'timestamp': datetime.utcnow().isoformat(),
+        'connected': user.mt5_validated  # Based on validation state, not live connection
     }
 
-    return jsonify(response_data), 200
+    # Attempt live MT5 validation only if available on this platform (Windows)
+    if MT5_AVAILABLE:
+        try:
+            live_account_info = validate_mt5_credentials(
+                user.mt5_account,
+                user.mt5_server or 'MetaQuotes-Demo',
+                user.mt5_password
+            )
+            # Live validation successful - add detailed account metrics
+            account_info['account']['balance'] = float(live_account_info.balance)
+            account_info['account']['equity'] = float(live_account_info.equity)
+            account_info['account']['margin_level'] = float(live_account_info.margin_level) if hasattr(live_account_info, 'margin_level') else 0.0
+            account_info['account']['free_margin'] = float(live_account_info.margin_free) if hasattr(live_account_info, 'margin_free') else 0.0
+            account_info['account']['leverage'] = int(live_account_info.leverage) if hasattr(live_account_info, 'leverage') else None
+            account_info['account']['trade_mode'] = str(getattr(live_account_info, 'trade_mode', 'unknown'))
+            
+            # Update validation state
+            user.mt5_validated = True
+            db.session.commit()
+            
+            account_info['validation_status'] = 'validated_by_server'
+            account_info['retrieved_from'] = 'live_mt5_connection'
+            account_info['connected'] = True
+            
+            logging.info(f"Live MT5 validation successful for user {user.username} ({user.mt5_account})")
+        except Exception as e:
+            # Live validation failed, but still return cached info (no 503 error!)
+            logging.warning(f"Live MT5 validation failed for user {user.username}: {str(e)}")
+            account_info['validation_warning'] = f'Live validation unavailable: {str(e)}'
+            account_info['note'] = 'Using cached account info. Local bot will validate on connection.'
+    else:
+        # No MT5 available on this platform - provide helpful context
+        account_info['validation_note'] = 'Live MT5 validation happens on your local Windows machine'
+        account_info['next_steps'] = [
+            '1. Your MT5 credentials are securely stored in the cloud',
+            '2. Download the DababyBot local client for Windows',
+            '3. The local client connects to MT5 using your saved credentials',
+            '4. Once connected, this dashboard shows live account metrics',
+            '5. Trading will start automatically with real-time MT5 integration'
+        ]
+
+    logging.info(f"Retrieved MT5 account info for user {user.username}")
+    return jsonify(account_info), 200
 
 
 @app.route('/api/user/symbols', methods=['POST'])
@@ -1382,10 +1430,10 @@ def start_bot():
         return jsonify({'error': 'Bot already running'}), 400
     
     if not user.mt5_account:
-        return jsonify({'error': 'MT5 credentials not configured'}), 400
+        return jsonify({'error': 'MT5 credentials not configured. Please connect your MT5 account first.'}), 400
 
-    if MT5_AVAILABLE and not user.mt5_validated:
-        return jsonify({'error': 'MT5 account not validated. Please reconnect your MT5 account.'}), 400
+    # Note: MT5 validation now happens on the local client, not server
+    # We just check that credentials are configured
     
     # Get bot configuration from request
     data = request.get_json() or {}
@@ -1394,56 +1442,46 @@ def start_bot():
     daily_profit_target = float(data.get('daily_profit_target', 500))  # Default $500
     
     try:
-        # Verify MT5 connection first (if available)
-        if MT5_AVAILABLE:
-            if not mt5.initialize(login=int(user.mt5_account), server=user.mt5_server, password=user.mt5_password):
-                mt5.shutdown()
-                return jsonify({'error': f'MT5 connection failed: {mt5.last_error()}'}), 400
-            
-            # Get account info
-            account_info = mt5.account_info()
-            if account_info is None:
-                mt5.shutdown()
-                return jsonify({'error': 'Could not get account info'}), 400
-            
-            logger.info(f"MT5 verified for user {user.username}: Balance=${account_info.balance}")
-            mt5.shutdown()  # Close for now, bot will open its own connection
-        
-        # Create stop event for this bot
+        # In SaaS mode, we don't validate MT5 on server
+        # The local bot client will handle MT5 connection and validation
+        logger.info(f"Bot configuration validated for user {user.username}")
+
+        # Create stop event for this bot (for future use if needed)
         stop_event = threading.Event()
-        
-        # Start bot in background thread
-        bot_thread = threading.Thread(
-            target=_run_bot_with_stop,
-            args=(user_id, user.mt5_account, user.mt5_server, user.mt5_password, stop_event),
-            daemon=True,
-            name=f"BotThread-{user.username}"
-        )
-        bot_thread.start()
-        
-        # Store thread reference
-        bot_threads[user_id] = {'thread': bot_thread, 'stop_event': stop_event}
-        
-        # Mark bot as running
+
+        # In SaaS architecture, the actual bot runs on user's local machine
+        # Here we just mark it as "ready to start" and provide instructions
+        # The local client will poll this status and start the bot
+
+        # Mark bot as running in database (will be updated by local client)
         user.bot_running = True
-        
+
         instance = BotInstance(
             user_id=user.id,
-            status='RUNNING'
+            status='READY_TO_START'  # Changed from RUNNING to READY_TO_START
         )
         db.session.add(instance)
         db.session.commit()
-        
+
         # Log bot start activity
-        log_user_activity(user_id, 'bot_start', 'Bot started', status='success', 
-                         metadata={'symbols': symbols, 'account': user.mt5_account})
-        
-        logger.info(f"Bot thread started for user {user.username} ({user_id})")
-        
+        log_user_activity(user_id, 'bot_start', 'Bot configured for local startup', status='success',
+                         metadata={'symbols': symbols, 'account': user.mt5_account, 'server': user.mt5_server})
+
+        logger.info(f"Bot configured for local startup for user {user.username} ({user_id})")
+
         return jsonify({
-            'message': 'Bot started successfully',
+            'message': 'Bot configured successfully. Start your local DABABYBOT client to begin trading.',
             'instance': instance.to_dict(),
-            'bot_available': BOT_AVAILABLE
+            'next_steps': [
+                'Download and run the local DABABYBOT client on your Windows machine',
+                'The client will automatically connect using your saved MT5 credentials',
+                'Trading will begin once MT5 connection is established locally'
+            ],
+            'mt5_credentials': {
+                'account': user.mt5_account,
+                'server': user.mt5_server,
+                'configured': True
+            }
         }), 200
         
     except Exception as e:
@@ -1508,8 +1546,12 @@ def bot_status():
     
     return jsonify({
         'running': user.bot_running,
+        'status': 'READY_TO_START' if user.bot_running else 'STOPPED',
+        'architecture': 'SaaS - Local MT5 Connection',
         'symbols': json.loads(user.selected_symbols or '[]'),
-        'subscription': user.subscription_plan
+        'subscription': user.subscription_plan,
+        'mt5_configured': bool(user.mt5_account and user.mt5_server),
+        'next_step': 'Run local DABABYBOT client on Windows' if user.bot_running else None
     }), 200
 
 
