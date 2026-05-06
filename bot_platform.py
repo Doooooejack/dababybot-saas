@@ -1613,6 +1613,185 @@ def get_bot_logs():
         }), 200
 
 
+# ============ WEBSOCKET RELAY ROUTES ============
+# Allows local Windows bots to connect and receive trade commands from cloud
+# Enables non-Windows users to trade through connected bot instances
+
+from websocket_relay import initialize_relay, relay
+
+# Initialize relay system on startup
+relay_instance = initialize_relay()
+
+@app.route('/api/relay/status', methods=['GET'])
+def get_relay_status():
+    """Get relay system status - public endpoint to check if relay is running"""
+    return jsonify(relay_instance.get_relay_status()), 200
+
+
+@app.route('/api/relay/bot-register', methods=['POST'])
+@jwt_required()
+def register_bot():
+    """Register a Windows bot connection with the cloud relay"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    data = request.get_json()
+    account = data.get('account')
+    server = data.get('server')
+    
+    if not account or not server:
+        return jsonify({'error': 'Account and server are required'}), 400
+    
+    # Register bot with relay
+    relay_instance.register_bot(
+        user_id=user_id,
+        bot_client=None,  # WebSocket connection would be here in full impl
+        account_number=account,
+        server=server
+    )
+    
+    logger.info(f"✅ Bot registered: User {user.username}, Account {account}")
+    
+    return jsonify({
+        'message': f'Bot registered successfully for {account} on {server}',
+        'relay_status': 'active',
+        'user_id': user_id
+    }), 200
+
+
+@app.route('/api/relay/bot-unregister', methods=['POST'])
+@jwt_required()
+def unregister_bot():
+    """Unregister a bot from the relay"""
+    user_id = get_jwt_identity()
+    
+    relay_instance.unregister_bot(user_id)
+    
+    logger.info(f"🔌 Bot unregistered: User {user_id}")
+    
+    return jsonify({
+        'message': 'Bot unregistered from relay',
+        'relay_status': 'disconnected'
+    }), 200
+
+
+@app.route('/api/relay/heartbeat', methods=['POST'])
+@jwt_required()
+def bot_heartbeat():
+    """Heartbeat to keep bot connection alive"""
+    user_id = get_jwt_identity()
+    
+    bot_info = relay_instance.get_connected_bot(user_id)
+    
+    if not bot_info:
+        return jsonify({'error': 'Bot not registered with relay'}), 404
+    
+    # Update registration timestamp to mark as active
+    relay_instance.connected_bots[user_id]['registered_at'] = datetime.utcnow()
+    
+    return jsonify({
+        'alive': True,
+        'relay_active': True,
+        'timestamp': datetime.utcnow().isoformat()
+    }), 200
+
+
+@app.route('/api/relay/pending-trades', methods=['GET'])
+@jwt_required()
+def get_pending_trades():
+    """Get pending trades for connected bot"""
+    user_id = get_jwt_identity()
+    
+    bot_info = relay_instance.get_connected_bot(user_id)
+    
+    if not bot_info:
+        return jsonify({'trades': []}), 200
+    
+    # Get pending trades from queue (this is simplified)
+    # In full implementation, would filter queue by user_id
+    pending_trades = []
+    
+    logger.debug(f"📥 Bot {user_id} checking for {len(pending_trades)} pending trades")
+    
+    return jsonify({
+        'trades': pending_trades,
+        'total_pending': len(pending_trades)
+    }), 200
+
+
+@app.route('/api/relay/trade-result', methods=['POST'])
+@jwt_required()
+def send_trade_result():
+    """Bot sends back trade execution result"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    data = request.get_json()
+    trade_id = data.get('trade_id')
+    success = data.get('success')
+    result = data.get('result', {})
+    
+    if not trade_id:
+        return jsonify({'error': 'Trade ID is required'}), 400
+    
+    # Store trade result in relay
+    relay_instance.trade_results[trade_id] = {
+        'user_id': user_id,
+        'success': success,
+        'result': result,
+        'received_at': datetime.utcnow().isoformat()
+    }
+    
+    logger.info(f"✅ Trade result received: {trade_id} - Success: {success}")
+    
+    return jsonify({
+        'message': 'Trade result received',
+        'trade_id': trade_id,
+        'status': 'recorded'
+    }), 200
+
+
+@app.route('/api/relay/send-trade', methods=['POST'])
+@jwt_required()
+def send_trade_to_bot():
+    """Dashboard sends trade command to connected bot via relay"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    # Check if bot is connected
+    bot_info = relay_instance.get_connected_bot(user_id)
+    
+    if not bot_info:
+        return jsonify({
+            'error': 'No bot connected',
+            'message': 'A Windows bot must be running and connected to execute trades',
+            'bot_status': 'offline'
+        }), 503
+    
+    data = request.get_json()
+    
+    # Queue trade for relay
+    trade_id = relay_instance.queue_trade_command(user_id, data)
+    
+    logger.info(f"📤 Trade queued for relay: {trade_id} for user {user.username}")
+    
+    return jsonify({
+        'message': 'Trade queued for execution',
+        'trade_id': trade_id,
+        'status': 'pending',
+        'bot_status': 'connected'
+    }), 200
+
+
 # ============ TRADES ROUTES ============
 
 @app.route('/api/trades', methods=['GET'])
