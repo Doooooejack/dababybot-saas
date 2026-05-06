@@ -1553,6 +1553,10 @@ def start_bot():
     symbols = data.get('symbols', ['EURUSD'])
     daily_loss_limit = float(data.get('daily_loss_limit', 100))  # Default $100
     daily_profit_target = float(data.get('daily_profit_target', 500))  # Default $500
+    trade_count = int(data.get('trade_count', 1))
+    
+    if trade_count < 1 or trade_count > 10:
+        return jsonify({'error': 'Trade count must be between 1 and 10'}), 400
     
     try:
         # In SaaS mode, we don't validate MT5 on server
@@ -1568,6 +1572,7 @@ def start_bot():
 
         # Mark bot as running in database (will be updated by local client)
         user.bot_running = True
+        user.selected_symbols = json.dumps(symbols)
 
         instance = BotInstance(
             user_id=user.id,
@@ -1578,18 +1583,31 @@ def start_bot():
 
         # Log bot start activity
         log_user_activity(user_id, 'bot_start', 'Bot configured for local startup', status='success',
-                         metadata={'symbols': symbols, 'account': user.mt5_account, 'server': user.mt5_server})
+                         metadata={
+                             'symbols': symbols,
+                             'account': user.mt5_account,
+                             'server': user.mt5_server,
+                             'trade_count': trade_count,
+                             'daily_loss_limit': daily_loss_limit,
+                             'daily_profit_target': daily_profit_target
+                         })
 
         logger.info(f"Bot configured for local startup for user {user.username} ({user_id})")
 
         return jsonify({
-            'message': 'Bot configured successfully. Start your local DABABYBOT client to begin trading.',
+            'message': 'Bot configured successfully. Start your local DABABYBOT client on your Windows machine to begin trading.',
             'instance': instance.to_dict(),
             'next_steps': [
                 'Download and run the local DABABYBOT client on your Windows machine',
                 'The client will automatically connect using your saved MT5 credentials',
                 'Trading will begin once MT5 connection is established locally'
             ],
+            'bot_configuration': {
+                'symbols': symbols,
+                'trade_count': trade_count,
+                'daily_loss_limit': daily_loss_limit,
+                'daily_profit_target': daily_profit_target
+            },
             'mt5_credentials': {
                 'account': user.mt5_account,
                 'server': user.mt5_server,

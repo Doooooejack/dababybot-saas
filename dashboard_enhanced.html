@@ -1261,8 +1261,8 @@
                         </div>
                     </div>
                     
-                    <!-- Risk & Lot Size (kept for reference) -->
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+                    <!-- Risk, Lot Size & Trade Count -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-bottom: 15px;">
                         <div>
                             <label><strong>⚡ Risk per Trade (%):</strong></label>
                             <input type="number" id="dashboard-risk" placeholder="2" value="2" min="0.1" max="5" style="width: 100%;">
@@ -1270,6 +1270,22 @@
                         <div>
                             <label><strong>📊 Lot Size:</strong></label>
                             <input type="number" id="dashboard-lotsize" placeholder="0.1" value="0.1" min="0.01" style="width: 100%;">
+                        </div>
+                        <div>
+                            <label><strong>🎯 Max Trades:</strong></label>
+                            <select id="trade-count" style="width: 100%; padding: 10px; background: #0d1b2a; border: 1px solid #2a3a4a; color: #fff; border-radius: 4px;">
+                                <option value="1">1 trade</option>
+                                <option value="2">2 trades</option>
+                                <option value="3">3 trades</option>
+                                <option value="4">4 trades</option>
+                                <option value="5" selected>5 trades</option>
+                                <option value="6">6 trades</option>
+                                <option value="7">7 trades</option>
+                                <option value="8">8 trades</option>
+                                <option value="9">9 trades</option>
+                                <option value="10">10 trades</option>
+                            </select>
+                            <small style="color: #888; font-size: 0.85em;">Limit active trades per session</small>
                         </div>
                     </div>
                     
@@ -1292,7 +1308,7 @@
                 </div>
                 
                 <div style="background: rgba(255, 255, 255, 0.05); padding: 15px; border-radius: 8px; margin-top: 15px; border-left: 3px solid #4da6ff;">
-                    <p style="color: #888; font-size: 0.9rem; margin: 0;">💡 <strong>Tip:</strong> Select 1-2 symbols to start. Set conservative daily loss limit ($50-100). Monitor live logs to see trading activity.</p>
+                    <p style="color: #888; font-size: 0.9rem; margin: 0;">💡 <strong>Tip:</strong> Select 1-2 symbols to start, choose up to 10 trades, and set conservative daily loss limit ($50-100). Monitor live logs to see trading activity.</p>
                 </div>
             </div>
             
@@ -1715,9 +1731,14 @@
             // Get daily loss/profit limits
             const dailyLossLimit = parseFloat(document.getElementById('daily-loss-limit').value) || 100;
             const dailyProfitTarget = parseFloat(document.getElementById('daily-profit-target').value) || 500;
+            const tradeCount = parseInt(document.getElementById('trade-count').value, 10) || 1;
             
             if (dailyLossLimit <= 0 || dailyProfitTarget <= 0) {
                 showToast('Daily loss and profit targets must be greater than 0', 'warning');
+                return;
+            }
+            if (tradeCount < 1 || tradeCount > 10) {
+                showToast('Please select between 1 and 10 trades', 'warning');
                 return;
             }
             
@@ -1729,7 +1750,8 @@
                 body: JSON.stringify({ 
                     symbols,
                     daily_loss_limit: dailyLossLimit,
-                    daily_profit_target: dailyProfitTarget
+                    daily_profit_target: dailyProfitTarget,
+                    trade_count: tradeCount
                 })
             });
             
