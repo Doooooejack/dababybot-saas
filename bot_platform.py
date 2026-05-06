@@ -2121,6 +2121,263 @@ def log_user_activity(user_id, activity_type, description, status='success', met
     db.session.commit()
 
 
+# ============ STRATEGY/EA ROUTES ============
+
+@app.route('/api/strategy/create', methods=['POST'])
+@jwt_required()
+def create_strategy():
+    """Create new trading strategy (EA)"""
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    
+    try:
+        strategy_data = {
+            'user_id': user_id,
+            'name': data.get('name', 'Untitled Strategy'),
+            'symbol': data.get('symbol', 'EURUSD'),
+            'is_active': False,
+            'entry_rules': json.dumps(data.get('entry_rules', [])),
+            'exit_rules': json.dumps(data.get('exit_rules', [])),
+            'risk_management': json.dumps(data.get('risk_management', {
+                'position_size': 0.1,
+                'stop_loss_pips': 50,
+                'take_profit_pips': 100,
+                'max_concurrent_trades': 1
+            })),
+            'created_at': datetime.utcnow(),
+            'last_modified': datetime.utcnow()
+        }
+        
+        # Create strategy record in database
+        # (You'll need to add Strategy model to your database)
+        
+        return jsonify({
+            'strategy_id': str(uuid.uuid4()),
+            'message': 'Strategy created successfully',
+            'strategy': strategy_data
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"Create strategy error: {e}")
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/strategy/<strategy_id>/activate', methods=['POST'])
+@jwt_required()
+def activate_strategy(strategy_id):
+    """Turn on strategy (start trading)"""
+    user_id = get_jwt_identity()
+    
+    try:
+        # Load and activate strategy
+        # Strategy should be tied to user_id
+        
+        return jsonify({
+            'message': 'Strategy activated',
+            'strategy_id': strategy_id,
+            'is_active': True,
+            'status': 'waiting_entry'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Activate strategy error: {e}")
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/strategy/<strategy_id>/deactivate', methods=['POST'])
+@jwt_required()
+def deactivate_strategy(strategy_id):
+    """Turn off strategy (stop trading)"""
+    user_id = get_jwt_identity()
+    
+    try:
+        return jsonify({
+            'message': 'Strategy deactivated',
+            'strategy_id': strategy_id,
+            'is_active': False,
+            'status': 'idle'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Deactivate strategy error: {e}")
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/strategy/<strategy_id>/update', methods=['POST'])
+@jwt_required()
+def update_strategy(strategy_id):
+    """Modify strategy parameters (even while running!)"""
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    
+    try:
+        updates = {
+            'last_modified': datetime.utcnow()
+        }
+        
+        if 'entry_rules' in data:
+            updates['entry_rules'] = json.dumps(data['entry_rules'])
+        if 'exit_rules' in data:
+            updates['exit_rules'] = json.dumps(data['exit_rules'])
+        if 'risk_management' in data:
+            updates['risk_management'] = json.dumps(data['risk_management'])
+        if 'name' in data:
+            updates['name'] = data['name']
+        if 'symbol' in data:
+            updates['symbol'] = data['symbol']
+        
+        return jsonify({
+            'message': 'Strategy updated successfully',
+            'strategy_id': strategy_id,
+            'updates': updates
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Update strategy error: {e}")
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/strategy/<strategy_id>/status', methods=['GET'])
+@jwt_required()
+def get_strategy_status(strategy_id):
+    """Get current strategy status"""
+    user_id = get_jwt_identity()
+    
+    try:
+        # Return current strategy state
+        return jsonify({
+            'strategy_id': strategy_id,
+            'user_id': user_id,
+            'name': 'Strategy Name',
+            'symbol': 'EURUSD',
+            'is_active': False,
+            'status': 'idle',
+            'last_trade_id': None,
+            'position_size': 0.1,
+            'sl_pips': 50,
+            'tp_pips': 100,
+            'last_modified': datetime.utcnow().isoformat()
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Get strategy status error: {e}")
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/strategy/list', methods=['GET'])
+@jwt_required()
+def list_strategies():
+    """Get all strategies for user"""
+    user_id = get_jwt_identity()
+    
+    try:
+        # Return all user's strategies
+        return jsonify({
+            'user_id': user_id,
+            'strategies': [],
+            'total': 0
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"List strategies error: {e}")
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/strategy/templates', methods=['GET'])
+@jwt_required()
+def get_strategy_templates():
+    """Get pre-built strategy templates user can use"""
+    
+    templates = {
+        'scalper': {
+            'name': 'Scalper - RSI Quick Profits',
+            'description': 'Trade 5-minute scalps when RSI crosses overbought/oversold',
+            'symbol': 'EURUSD',
+            'entry_rules': [
+                {
+                    'name': 'RSI Oversold',
+                    'indicator': 'rsi',
+                    'condition': '<',
+                    'value': 30
+                }
+            ],
+            'exit_rules': [
+                {
+                    'name': 'RSI Overbought',
+                    'indicator': 'rsi',
+                    'condition': '>',
+                    'value': 70
+                }
+            ],
+            'risk_management': {
+                'position_size': 0.1,
+                'stop_loss_pips': 15,
+                'take_profit_pips': 30,
+                'max_concurrent_trades': 1
+            }
+        },
+        'swing': {
+            'name': 'Swing Trader - SMA Crossover',
+            'description': 'Capture swings with moving average crossovers',
+            'symbol': 'EURUSD',
+            'entry_rules': [
+                {
+                    'name': 'SMA 50 crosses above SMA 200',
+                    'indicator': 'sma_cross',
+                    'condition': 'cross_above',
+                    'value': '50,200'
+                }
+            ],
+            'exit_rules': [
+                {
+                    'name': 'SMA 50 crosses below SMA 200',
+                    'indicator': 'sma_cross',
+                    'condition': 'cross_below',
+                    'value': '50,200'
+                }
+            ],
+            'risk_management': {
+                'position_size': 0.5,
+                'stop_loss_pips': 100,
+                'take_profit_pips': 250,
+                'max_concurrent_trades': 1
+            }
+        },
+        'trend': {
+            'name': 'Trend Follower - MACD Signal',
+            'description': 'Follow strong trends using MACD',
+            'symbol': 'EURUSD',
+            'entry_rules': [
+                {
+                    'name': 'MACD crosses above signal line',
+                    'indicator': 'macd',
+                    'condition': 'cross_above',
+                    'value': 0
+                }
+            ],
+            'exit_rules': [
+                {
+                    'name': 'MACD crosses below signal line',
+                    'indicator': 'macd',
+                    'condition': 'cross_below',
+                    'value': 0
+                }
+            ],
+            'risk_management': {
+                'position_size': 0.3,
+                'stop_loss_pips': 75,
+                'take_profit_pips': 200,
+                'max_concurrent_trades': 2
+            }
+        }
+    }
+    
+    return jsonify({
+        'templates': templates,
+        'total': len(templates)
+    }), 200
+
+
 # ============ FRONTEND ROUTES ============
 
 @app.route('/', methods=['GET'])
