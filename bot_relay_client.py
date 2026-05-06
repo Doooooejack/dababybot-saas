@@ -72,6 +72,8 @@ class BotRelayClient:
                 self.is_connected = True
                 self.connection_retry_count = 0
                 logger.info(f"✅ RELAY CONNECTED: {result.get('message', 'Connected successfully')}")
+                # Send live MT5 account metrics to the platform if available
+                self.send_account_info()
                 return True
             else:
                 logger.warning(f"❌ Relay connection failed: {response.status_code} - {response.text}")
@@ -87,7 +89,63 @@ class BotRelayClient:
             return True
         
         return self.connect_to_relay()
-    
+
+    def send_account_info(self):
+        """Send current MT5 account metrics to the cloud dashboard"""
+        import requests
+        try:
+            account_info = self._collect_local_mt5_account_info()
+            if not account_info:
+                logger.warning("⚠️ No local MT5 account info available to send")
+                return False
+
+            endpoint = f"{self.cloud_url}/api/relay/bot-update-account-info"
+            headers = {
+                'Authorization': f'Bearer {self.auth_token}',
+                'Content-Type': 'application/json'
+            }
+            payload = account_info
+            response = requests.post(endpoint, json=payload, headers=headers, timeout=10)
+
+            if response.status_code == 200:
+                logger.info(f"✅ Account info updated on cloud: {payload}")
+                return True
+            else:
+                logger.warning(f"❌ Failed to update account info: {response.status_code} - {response.text}")
+                return False
+        except Exception as e:
+            logger.error(f"❌ send_account_info error: {str(e)}")
+            return False
+
+    def _collect_local_mt5_account_info(self):
+        """Collect account metrics from local MetaTrader 5 terminal"""
+        try:
+            import MetaTrader5 as mt5
+        except ImportError:
+            logger.warning("⚠️ MetaTrader5 module not installed locally; cannot collect account info")
+            return None
+
+        if not mt5.initialize():
+            logger.warning("⚠️ Failed to initialize MetaTrader5 terminal locally")
+            return None
+
+        account_info = mt5.account_info()
+        if account_info is None:
+            logger.warning("⚠️ Could not read local MT5 account info")
+            mt5.shutdown()
+            return None
+
+        data = {
+            'balance': float(getattr(account_info, 'balance', 0.0)),
+            'equity': float(getattr(account_info, 'equity', 0.0)),
+            'margin_level': float(getattr(account_info, 'margin_level', 0.0)),
+            'margin_free': float(getattr(account_info, 'margin_free', 0.0)),
+            'account': str(getattr(account_info, 'login', self.mt5_account)),
+            'server': str(getattr(account_info, 'server', self.mt5_server))
+        }
+        mt5.shutdown()
+        return data
+
     def check_for_trades(self):
         """Poll cloud for pending trades (non-blocking)"""
         import requests

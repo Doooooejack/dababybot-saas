@@ -1680,7 +1680,7 @@
             
             // Show warning if in demo mode
             if (accountInfo?.demo_mode) {
-                document.getElementById('live-dashboard').innerHTML += '<p style="color: orange; font-size: 0.9em;">⚠️ Demo Mode: Running on Render. Real balance will sync when bot is active on Windows. <button onclick="refreshAccountInfo()">🔄 Refresh</button></p>';
+                document.getElementById('live-dashboard').innerHTML += '<p style="color: #4da6ff; font-size: 0.9em;">ℹ️ SaaS Mode: MT5 connection will be established when you run the bot on your local Windows machine. <button onclick="refreshAccountInfo()">🔄 Refresh</button></p>';
             }
             
             document.getElementById('live-dashboard').style.display = 'block';
@@ -1737,13 +1737,13 @@
             
             if (res.ok) {
                 localStorage.setItem('bot_running', 'true');
-                showToast('🚀 Bot RUNNING - Symbols: ' + symbols.join(', '), 'success');
+                showToast('✅ Bot configured for local startup. Run DABABYBOT client on Windows to begin trading.', 'success');
                 updateBotStatus();
-                // Start fetching logs
-                loadBotLogs();
-                // Auto-refresh logs every 3 seconds
-                if (!window.botLogsInterval) {
-                    window.botLogsInterval = setInterval(loadBotLogs, 3000);
+                // Show next steps
+                if (data.next_steps) {
+                    setTimeout(() => {
+                        alert('Next Steps:\\n\\n' + data.next_steps.join('\\n\\n') + '\\n\\nYour MT5 credentials are saved and ready for local connection.');
+                    }, 1000);
                 }
             } else {
                 // Check if subscription required

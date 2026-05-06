@@ -314,6 +314,21 @@ def migrate_user_schema():
     if 'max_symbols' not in existing_columns:
         alter_statements.append("ALTER TABLE users ADD COLUMN max_symbols INTEGER DEFAULT 1")
         patched_columns.append('max_symbols')
+    if 'mt5_balance' not in existing_columns:
+        alter_statements.append("ALTER TABLE users ADD COLUMN mt5_balance FLOAT DEFAULT 0")
+        patched_columns.append('mt5_balance')
+    if 'mt5_equity' not in existing_columns:
+        alter_statements.append("ALTER TABLE users ADD COLUMN mt5_equity FLOAT DEFAULT 0")
+        patched_columns.append('mt5_equity')
+    if 'mt5_margin_level' not in existing_columns:
+        alter_statements.append("ALTER TABLE users ADD COLUMN mt5_margin_level FLOAT DEFAULT 0")
+        patched_columns.append('mt5_margin_level')
+    if 'mt5_margin_free' not in existing_columns:
+        alter_statements.append("ALTER TABLE users ADD COLUMN mt5_margin_free FLOAT DEFAULT 0")
+        patched_columns.append('mt5_margin_free')
+    if 'mt5_last_connected' not in existing_columns:
+        alter_statements.append("ALTER TABLE users ADD COLUMN mt5_last_connected DATETIME")
+        patched_columns.append('mt5_last_connected')
 
     if alter_statements:
         logger.info(f"Migrating users table; adding columns: {', '.join(patched_columns)}")
@@ -366,6 +381,11 @@ class User(db.Model):
     selected_symbols = db.Column(db.String(500), default='')  # JSON string
     
     # Account Info
+    mt5_balance = db.Column(db.Float, default=0.0)
+    mt5_equity = db.Column(db.Float, default=0.0)
+    mt5_margin_level = db.Column(db.Float, default=0.0)
+    mt5_margin_free = db.Column(db.Float, default=0.0)
+    mt5_last_connected = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime)
     is_admin = db.Column(db.Boolean, default=False)
@@ -893,19 +913,46 @@ def connect_mt5():
     user.mt5_account = account
     user.mt5_password = encrypted_password
     user.mt5_validated = False  # Mark as unvalidated until local client confirms
+    
+    # Try to get live account info if MT5 is available on this server
+    account_data = None
+    validation_status = 'pending_local_verification'
+    if MT5_AVAILABLE:
+        try:
+            account_data = validate_mt5_credentials(account, server, password)
+            user.mt5_validated = True
+            validation_status = 'validated'
+        except Exception as e:
+            logging.warning(f"Could not validate MT5 on server: {e}")
+    
     db.session.commit()
 
+    # Build response with account data if available
+    account_response = {
+        'number': account,
+        'server': server,
+        'platform': 'MetaTrader5',
+        'configured_at': datetime.utcnow().isoformat(),
+        'validation_status': validation_status
+    }
+    
+    # Add live data if we got it
+    if account_data:
+        try:
+            account_response['balance'] = float(account_data.balance)
+            account_response['equity'] = float(account_data.equity)
+            account_response['margin_level'] = float(getattr(account_data, 'margin_level', 0))
+            account_response['free_margin'] = float(getattr(account_data, 'margin_free', 0))
+            account_response['leverage'] = int(getattr(account_data, 'leverage', 1))
+            account_response['currency'] = str(getattr(account_data, 'currency', 'USD'))
+        except Exception as e:
+            logging.warning(f"Could not parse account data: {e}")
+    
     # Return success response with detailed instructions
     response_data = {
         'message': 'MT5 account credentials saved successfully',
         'success': True,
-        'account': {
-            'number': account,
-            'server': server,
-            'platform': 'MetaTrader5',
-            'configured_at': datetime.utcnow().isoformat(),
-            'validation_status': 'pending_local_verification'
-        },
+        'account': account_response,
         'instructions': {
             'step1': 'Your MT5 credentials have been securely saved to the cloud',
             'step2': 'Download and run the DababyBot local client on your Windows machine',
@@ -993,16 +1040,82 @@ def get_mt5_account_info():
     else:
         # No MT5 available on this platform - provide helpful context
         account_info['validation_note'] = 'Live MT5 validation happens on your local Windows machine'
+        account_info['connection_pending'] = True
+        account_info['status_message'] = 'Waiting for bot to connect...'
         account_info['next_steps'] = [
             '1. Your MT5 credentials are securely stored in the cloud',
             '2. Download the DababyBot local client for Windows',
-            '3. The local client connects to MT5 using your saved credentials',
-            '4. Once connected, this dashboard shows live account metrics',
-            '5. Trading will start automatically with real-time MT5 integration'
+            '3. Run: python bot_relay_client.py (with your credentials)',
+            '4. Once bot connects, this dashboard will show live balance',
+            '5. Bot status will change from PENDING to CONNECTED'
         ]
+
+    # If the bot has sent live account metrics, show them here
+    if user.mt5_balance is not None:
+        account_info['account']['balance'] = float(user.mt5_balance)
+    if user.mt5_equity is not None:
+        account_info['account']['equity'] = float(user.mt5_equity)
+    if user.mt5_margin_level is not None:
+        account_info['account']['margin_level'] = float(user.mt5_margin_level)
+    if user.mt5_margin_free is not None:
+        account_info['account']['free_margin'] = float(user.mt5_margin_free)
+    if user.mt5_last_connected is not None:
+        account_info['account']['last_connected'] = user.mt5_last_connected.isoformat()
+
+    # Ensure we always have these fields
+    if 'account' not in account_info:
+        account_info['account'] = {}
+    account_info['account'].setdefault('balance', 0.0)
+    account_info['account'].setdefault('equity', 0.0)
+    account_info['account'].setdefault('margin_level', 0.0)
+    account_info['account'].setdefault('free_margin', 0.0)
 
     logging.info(f"Retrieved MT5 account info for user {user.username}")
     return jsonify(account_info), 200
+
+
+@app.route('/api/relay/bot-update-account-info', methods=['POST'])
+@jwt_required()
+def bot_update_account_info():
+    """
+    Bot sends live account info back to dashboard after connecting to MT5.
+    This webhook is called by the local bot when it successfully connects to MT5.
+    Called by: bot_relay_client.py after MT5 connection established
+    """
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    data = request.get_json()
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    try:
+        # Store the account metrics from the bot
+        if 'balance' in data:
+            user.mt5_balance = float(data.get('balance', 0))
+        if 'equity' in data:
+            user.mt5_equity = float(data.get('equity', 0))
+        if 'margin_level' in data:
+            user.mt5_margin_level = float(data.get('margin_level', 0))
+        if 'margin_free' in data:
+            user.mt5_margin_free = float(data.get('margin_free', 0))
+        
+        user.mt5_validated = True
+        user.mt5_last_connected = datetime.utcnow()
+        db.session.commit()
+        
+        logger.info(f"Updated account info for user {user.username}: balance=${user.mt5_balance}")
+        
+        return jsonify({
+            'message': 'Account info updated successfully',
+            'account_info_stored': True,
+            'balance': user.mt5_balance,
+            'equity': user.mt5_equity
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Failed to update account info: {e}")
+        return jsonify({'error': str(e)}), 400
 
 
 @app.route('/api/user/symbols', methods=['POST'])

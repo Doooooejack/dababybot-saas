@@ -1591,6 +1591,502 @@ except Exception as e:
     def get_h1_trend_direction(*args, **kwargs): return "range"
     def is_counter_trend_trade(*args, **kwargs): return (False, "MODULE_NOT_AVAILABLE")
 
+# =============================================================================
+# 🚀 STREAMLINED TRADE SCORING ENGINE - SINGLE DECISION MAKER
+# =============================================================================
+
+class TradeScoringEngine:
+    """
+    SINGLE FINAL TRADE SCORING ENGINE
+    One score decides everything. No scattered approvals.
+    Make "skip trade" easier than "take trade".
+    """
+
+    def __init__(self):
+        self.critical_weights = {
+            'htf_bias': 25,      # Higher timeframe context (critical)
+            'liquidity_sweep': 20,  # Mandatory liquidity taken
+            'bos_confirmation': 20,  # Market structure shift
+            'entry_zone': 15,    # Optimal entry location
+            'confirmation_candle': 10,  # Final trigger
+            'risk_reward': 10    # Risk management
+        }
+
+        self.filter_weights = {
+            'extended_move': -30,     # Late entry killer
+            'post_spike': -25,        # Volatility cooldown
+            'continuation_room': -20, # Higher TF exhaustion
+            'late_exhaustion': -25,   # Poor RR late entries
+            'anti_revenge': -15,      # Session revenge trading
+            'counter_trend': -20,     # Wrong direction
+            'multi_entry': -10,       # Over-trading prevention
+            'sl_distance': -15        # Invalid stop loss
+        }
+
+        # Conservative thresholds - skip trade by default
+        self.min_score = 75  # Need 75+ to trade (out of 100)
+        self.max_score = 100
+
+    def calculate_trade_score(self, symbol, direction, entry_details, df_h4=None, df_h1=None, df_m15=None):
+        """
+        SINGLE SCORE CALCULATION - One score decides everything
+
+        Returns: (score, decision, reasons)
+        Score: 0-100
+        Decision: 'TRADE' or 'SKIP'
+        """
+        try:
+            score = 0
+            reasons = []
+
+            # === CRITICAL COMPONENTS (must pass) ===
+            critical_score = self._calculate_critical_score(symbol, direction, entry_details, df_h4, df_h1, df_m15)
+            if critical_score < 60:  # Critical components must be 60%+ of their weight
+                return critical_score, 'SKIP', ['CRITICAL_FAILURE'] + reasons
+
+            score += critical_score
+            reasons.append(f"Critical: {critical_score}")
+
+            # === FILTER PENALTIES (conservative - easy to skip) ===
+            filter_penalty = self._calculate_filter_penalties(symbol, direction, entry_details, df_h4, df_h1, df_m15)
+            score += filter_penalty
+            reasons.append(f"Filters: {filter_penalty}")
+
+            # === BONUS COMPONENTS (optional improvements) ===
+            bonus_score = self._calculate_bonus_score(entry_details)
+            score += bonus_score
+            reasons.append(f"Bonus: {bonus_score}")
+
+            # === FINAL DECISION ===
+            score = max(0, min(100, score))  # Clamp to 0-100
+
+            if score >= self.min_score:
+                decision = 'TRADE'
+                reasons.append(f"SCORE_{score:.0f}_TRADE")
+            else:
+                decision = 'SKIP'
+                reasons.append(f"SCORE_{score:.0f}_SKIP")
+
+            return score, decision, reasons
+
+        except Exception as e:
+            return 0, 'SKIP', [f'ERROR: {str(e)}']
+
+    def _calculate_critical_score(self, symbol, direction, entry_details, df_h4, df_h1, df_m15):
+        """Calculate critical components score (must pass)"""
+        score = 0
+
+        # 1. HTF Bias (25 points)
+        htf_score = self._score_htf_bias(symbol, direction, df_h4, df_h1)
+        score += htf_score
+
+        # 2. Liquidity Sweep (20 points)
+        sweep_score = self._score_liquidity_sweep(entry_details)
+        score += sweep_score
+
+        # 3. BOS Confirmation (20 points)
+        bos_score = self._score_bos_confirmation(entry_details)
+        score += bos_score
+
+        # 4. Entry Zone (15 points)
+        zone_score = self._score_entry_zone(entry_details)
+        score += zone_score
+
+        # 5. Confirmation Candle (10 points)
+        candle_score = self._score_confirmation_candle(entry_details)
+        score += candle_score
+
+        # 6. Risk/Reward (10 points)
+        rr_score = self._score_risk_reward(entry_details)
+        score += rr_score
+
+        return score
+
+    def _calculate_filter_penalties(self, symbol, direction, entry_details, df_h4, df_h1, df_m15):
+        """Calculate filter penalties (conservative - easy to skip)"""
+        penalty = 0
+
+        # Extended Move Filter
+        extended_ok, _ = check_extended_move_filter(symbol, direction, entry_details.get('entry_price', 0), df_h4, df_h1)
+        if not extended_ok:
+            penalty += self.filter_weights['extended_move']
+
+        # Post-Spike Cooldown
+        spike_ok, _ = check_post_spike_cooldown_filter(symbol, direction, entry_details.get('entry_price', 0), df_m15)
+        if not spike_ok:
+            penalty += self.filter_weights['post_spike']
+
+        # Continuation Room
+        continuation_ok, _ = check_continuation_room_filter(symbol, direction, entry_details.get('entry_price', 0), df_h4, df_h1)
+        if not continuation_ok:
+            penalty += self.filter_weights['continuation_room']
+
+        # Late Entry Exhaustion
+        late_ok, _ = check_late_entry_exhaustion_filter(symbol, direction, entry_details.get('entry_price', 0), entry_details, df_m15)
+        if not late_ok:
+            penalty += self.filter_weights['late_exhaustion']
+
+        # Anti-Revenge
+        revenge_ok, _ = _anti_revenge_filter.can_enter_after_sl(symbol, direction)
+        if not revenge_ok:
+            penalty += self.filter_weights['anti_revenge']
+
+        # Counter-Trend
+        counter_ok = check_counter_trend_rules(symbol, direction, entry_details.get('entry_price', 0))
+        if not counter_ok.get('is_safe', True):
+            penalty += self.filter_weights['counter_trend']
+
+        # Multi-Entry
+        multi_ok, _ = _multi_entry_tracker.can_enter(symbol, direction)
+        if not multi_ok:
+            penalty += self.filter_weights['multi_entry']
+
+        # SL Distance
+        sl = entry_details.get('sl')
+        entry_price = entry_details.get('entry_price', 0)
+        if sl and entry_price:
+            atr = entry_details.get('atr', 10.0)
+            sl_ok, _ = validate_sl_distance(symbol, entry_price, sl, atr)
+            if not sl_ok:
+                penalty += self.filter_weights['sl_distance']
+
+        return penalty
+
+    def _calculate_bonus_score(self, entry_details):
+        """Calculate bonus points for exceptional setups"""
+        bonus = 0
+
+        # Quality score bonus
+        quality = entry_details.get('quality_score') or entry_details.get('quality') or entry_details.get('score', 0)
+        if quality > 7:
+            bonus += 5
+
+        # Strong confluence bonus
+        confluence = entry_details.get('confluence', 0)
+        if confluence >= 4:
+            bonus += 3
+
+        return bonus
+
+    def _score_htf_bias(self, symbol, direction, df_h4, df_h1):
+        """Score HTF bias alignment"""
+        try:
+            if df_h4 is None or len(df_h4) < 20:
+                return 0  # No data = no trade
+
+            # Check H4 trend alignment
+            recent_h4 = df_h4.tail(20)
+            h4_trend = 'bullish' if recent_h4['close'].iloc[-1] > recent_h4['close'].iloc[0] else 'bearish'
+
+            if direction == 'buy' and h4_trend == 'bullish':
+                return self.critical_weights['htf_bias']
+            elif direction == 'sell' and h4_trend == 'bearish':
+                return self.critical_weights['htf_bias']
+
+            return 0  # Wrong HTF direction = no trade
+
+        except Exception:
+            return 0
+
+    def _score_liquidity_sweep(self, entry_details):
+        """Score liquidity sweep detection"""
+        sweep_detected = entry_details.get('sweep_detected') or entry_details.get('liquidity_sweep') or entry_details.get('sweep')
+        if sweep_detected:
+            return self.critical_weights['liquidity_sweep']
+        return 0  # No sweep = no trade
+
+    def _score_bos_confirmation(self, entry_details):
+        """Score BOS confirmation"""
+        bos_type = entry_details.get('mss_type', '').lower()
+        if 'bos' in bos_type or 'choch' in bos_type:
+            return self.critical_weights['bos_confirmation']
+        return 0  # No BOS = no trade
+
+    def _score_entry_zone(self, entry_details):
+        """Score entry zone quality"""
+        zone_ok = entry_details.get('entry_zone') and entry_details.get('price_in_zone')
+        if zone_ok:
+            return self.critical_weights['entry_zone']
+        return 0  # Poor zone = no trade
+
+    def _score_confirmation_candle(self, entry_details):
+        """Score confirmation candle"""
+        # Assume candle confirmation is handled by SMC trader
+        confidence = entry_details.get('confidence', 0)
+        if confidence > 0.6:  # 60%+ confidence
+            return self.critical_weights['confirmation_candle']
+        return 0
+
+    def _score_risk_reward(self, entry_details):
+        """Score risk/reward ratio"""
+        rr = entry_details.get('rr', 0)
+        if rr >= 1.5:  # Minimum 1.5 RR
+            return self.critical_weights['risk_reward']
+        return 0  # Poor RR = no trade
+
+# Initialize the single scoring engine
+_trade_scorer = TradeScoringEngine()
+
+def check_extended_move_filter(symbol, direction, entry_price, df_h4=None, df_h1=None):
+    """
+    FILTER 1: DON'T CHASE EXTENDED MOVE
+
+    Block sells if price already made a large impulse down.
+    If bearish displacement already exceeds X ATR, do not open fresh sell unless deep retracement occurs.
+
+    Logic:
+    - Calculate displacement from recent swing high/low
+    - If displacement > X * ATR and no deep retracement, block
+    - For sells: if price fell > 2.5 ATR from swing high without 50%+ retracement, block
+    - For buys: if price rose > 2.5 ATR from swing low without 50%+ retracement, block
+    """
+    try:
+        if df_h4 is None:
+            df_h4 = get_price_data(symbol, timeframe="H4", bars=100)
+        if df_h1 is None:
+            df_h1 = get_price_data(symbol, timeframe="H1", bars=200)
+
+        if df_h4 is None or len(df_h4) < 20:
+            return True, "DATA_INSUFFICIENT"
+
+        # Calculate ATR
+        atr = calculate_atr(df_h4, period=14)
+        if atr <= 0:
+            return True, "ATR_INVALID"
+
+        recent_data = df_h4.tail(50)
+        current_price = entry_price
+
+        if direction == "sell":
+            # Find recent swing high
+            swing_high = recent_data['high'].max()
+            displacement = swing_high - current_price
+            displacement_atr = displacement / atr
+
+            # Check for deep retracement (50%+ of the move)
+            max_fall = swing_high - recent_data['low'].min()
+            current_retracement = (swing_high - current_price) / max_fall if max_fall > 0 else 0
+
+            # Block if extended move without deep retracement
+            if displacement_atr > 2.5 and current_retracement < 0.5:
+                return False, f"EXTENDED_BEARISH_MOVE: {displacement_atr:.1f} ATR displacement, {current_retracement:.1%} retracement"
+
+        elif direction == "buy":
+            # Find recent swing low
+            swing_low = recent_data['low'].min()
+            displacement = current_price - swing_low
+            displacement_atr = displacement / atr
+
+            # Check for deep retracement (50%+ of the move)
+            max_rise = recent_data['high'].max() - swing_low
+            current_retracement = (current_price - swing_low) / max_rise if max_rise > 0 else 0
+
+            # Block if extended move without deep retracement
+            if displacement_atr > 2.5 and current_retracement < 0.5:
+                return False, f"EXTENDED_BULLISH_MOVE: {displacement_atr:.1f} ATR displacement, {current_retracement:.1%} retracement"
+
+        return True, "MOVE_NOT_EXTENDED"
+
+    except Exception as e:
+        print(f"[EXTENDED_MOVE_FILTER ERROR] {symbol}: {e}")
+        return True, f"FILTER_ERROR: {e}"
+
+
+def check_post_spike_cooldown_filter(symbol, direction, entry_price, df_m15=None):
+    """
+    FILTER 2: POST-SPIKE COOLDOWN
+
+    After a huge candle / abnormal volatility spike, block entries for 3-8 candles.
+    Wait for structure to normalize.
+
+    Logic:
+    - Check last N candles for abnormal volatility (range > 2.5x ATR)
+    - If found, count candles since spike
+    - Block entries for 3-8 candles after spike
+    """
+    try:
+        if df_m15 is None:
+            df_m15 = get_price_data(symbol, timeframe="M15", bars=50)
+
+        if df_m15 is None or len(df_m15) < 20:
+            return True, "DATA_INSUFFICIENT"
+
+        # Calculate ATR
+        atr = calculate_atr(df_m15, period=14)
+        if atr <= 0:
+            return True, "ATR_INVALID"
+
+        recent_candles = df_m15.tail(20)
+
+        # Find spikes (range > 2.5x ATR)
+        spike_found = False
+        spike_index = -1
+        for i in range(len(recent_candles)):
+            candle_range = recent_candles.iloc[i]['high'] - recent_candles.iloc[i]['low']
+            if candle_range > 2.5 * atr:
+                spike_found = True
+                spike_index = i
+                break
+
+        if spike_found:
+            candles_since_spike = len(recent_candles) - 1 - spike_index
+            cooldown_period = 5  # 5 candles cooldown
+
+            if candles_since_spike < cooldown_period:
+                return False, f"POST_SPIKE_COOLDOWN: {candles_since_spike}/{cooldown_period} candles since spike"
+
+        return True, "NO_RECENT_SPIKE"
+
+    except Exception as e:
+        print(f"[POST_SPIKE_FILTER ERROR] {symbol}: {e}")
+        return True, f"FILTER_ERROR: {e}"
+
+
+def check_continuation_room_filter(symbol, direction, entry_price, df_h4=None, df_h1=None):
+    """
+    FILTER 3: REQUIRE HIGHER TIMEFRAME CONTINUATION ROOM
+
+    Before selling, ask: is there still room to downside? Or has price already completed the move?
+    If sell already expanded heavily into low liquidity / target area, skip.
+
+    Logic:
+    - For sells: check if price is near H4/H1 lows or key support levels
+    - If price already hit target zones, block
+    - For buys: check if price is near H4/H1 highs or key resistance levels
+    """
+    try:
+        if df_h4 is None:
+            df_h4 = get_price_data(symbol, timeframe="H4", bars=100)
+        if df_h1 is None:
+            df_h1 = get_price_data(symbol, timeframe="H1", bars=200)
+
+        if df_h4 is None or len(df_h4) < 20:
+            return True, "DATA_INSUFFICIENT"
+
+        current_price = entry_price
+
+        if direction == "sell":
+            # Check H4 context
+            h4_recent_low = df_h4['low'].tail(20).min()
+            h4_recent_high = df_h4['high'].tail(20).max()
+            h4_range = h4_recent_high - h4_recent_low
+
+            # If price is in lower 20% of recent H4 range, likely exhausted
+            price_position = (current_price - h4_recent_low) / h4_range if h4_range > 0 else 0.5
+
+            if price_position < 0.2:
+                return False, f"NO_CONTINUATION_ROOM_SELL: Price at {price_position:.1%} of H4 range (near lows)"
+
+            # Check H1 context
+            if df_h1 is not None and len(df_h1) >= 50:
+                h1_recent_low = df_h1['low'].tail(50).min()
+                h1_recent_high = df_h1['high'].tail(50).max()
+                h1_range = h1_recent_high - h1_recent_low
+                h1_position = (current_price - h1_recent_low) / h1_range if h1_range > 0 else 0.5
+
+                if h1_position < 0.25:
+                    return False, f"NO_CONTINUATION_ROOM_SELL: Price at {h1_position:.1%} of H1 range (near lows)"
+
+        elif direction == "buy":
+            # Check H4 context
+            h4_recent_low = df_h4['low'].tail(20).min()
+            h4_recent_high = df_h4['high'].tail(20).max()
+            h4_range = h4_recent_high - h4_recent_low
+
+            # If price is in upper 20% of recent H4 range, likely exhausted
+            price_position = (current_price - h4_recent_low) / h4_range if h4_range > 0 else 0.5
+
+            if price_position > 0.8:
+                return False, f"NO_CONTINUATION_ROOM_BUY: Price at {price_position:.1%} of H4 range (near highs)"
+
+            # Check H1 context
+            if df_h1 is not None and len(df_h1) >= 50:
+                h1_recent_low = df_h1['low'].tail(50).min()
+                h1_recent_high = df_h1['high'].tail(50).max()
+                h1_range = h1_recent_high - h1_recent_low
+                h1_position = (current_price - h1_recent_low) / h1_range if h1_range > 0 else 0.5
+
+                if h1_position > 0.75:
+                    return False, f"NO_CONTINUATION_ROOM_BUY: Price at {h1_position:.1%} of H1 range (near highs)"
+
+        return True, "CONTINUATION_ROOM_AVAILABLE"
+
+    except Exception as e:
+        print(f"[CONTINUATION_ROOM_FILTER ERROR] {symbol}: {e}")
+        return True, f"FILTER_ERROR: {e}"
+
+
+def check_late_entry_exhaustion_filter(symbol, direction, entry_price, entry_details=None, df_m15=None):
+    """
+    FILTER 4: LATE ENTRY EXHAUSTION
+
+    Block entries when:
+    - Move already extended
+    - Retracement is weak
+    - RR is poor
+    - Sell is too close to exhaustion
+
+    Logic:
+    - Check if entry is late in the move (weak retracement)
+    - Check RR ratio (must be > 1.5 for late entries)
+    - Check proximity to recent highs/lows
+    """
+    try:
+        if entry_details is None:
+            return True, "NO_ENTRY_DETAILS"
+
+        sl = entry_details.get('sl')
+        tp = entry_details.get('tp')
+
+        if sl is None or tp is None:
+            return True, "MISSING_SL_TP"
+
+        # Calculate RR
+        if direction == "buy":
+            risk = entry_price - sl
+            reward = tp - entry_price
+        else:  # sell
+            risk = sl - entry_price
+            reward = entry_price - tp
+
+        if risk <= 0:
+            return False, "INVALID_RISK_CALCULATION"
+
+        rr_ratio = reward / risk
+
+        # For late entries, require better RR
+        min_rr_for_late_entry = 2.0
+
+        if rr_ratio < min_rr_for_late_entry:
+            return False, f"LATE_ENTRY_POOR_RR: {rr_ratio:.2f} < {min_rr_for_late_entry} required"
+
+        # Check retracement strength
+        if df_m15 is None:
+            df_m15 = get_price_data(symbol, timeframe="M15", bars=50)
+
+        if df_m15 is not None and len(df_m15) >= 20:
+            recent_high = df_m15['high'].tail(20).max()
+            recent_low = df_m15['low'].tail(20).min()
+            recent_range = recent_high - recent_low
+
+            if recent_range > 0:
+                if direction == "sell":
+                    # For sells, check if we're too close to recent low (weak retracement)
+                    position_from_low = (entry_price - recent_low) / recent_range
+                    if position_from_low < 0.3:  # Less than 30% retracement
+                        return False, f"WEAK_RETRACEMENT_SELL: {position_from_low:.1%} from recent low"
+                elif direction == "buy":
+                    # For buys, check if we're too close to recent high (weak retracement)
+                    position_from_high = (recent_high - entry_price) / recent_range
+                    if position_from_high < 0.3:  # Less than 30% retracement
+                        return False, f"WEAK_RETRACEMENT_BUY: {position_from_high:.1%} from recent high"
+
+        return True, f"LATE_ENTRY_OK: RR={rr_ratio:.2f}"
+
+    except Exception as e:
+        print(f"[LATE_ENTRY_FILTER ERROR] {symbol}: {e}")
+        return True, f"FILTER_ERROR: {e}"
+
 # Initialize counter-trend tracker globally
 _counter_trend_tracker = CounterTrendTracker()
 
@@ -27393,9 +27889,7 @@ def main_trading_loop():
                     place_trade(symbol, direction, price, 0.001)  # Use current price as entry, default ATR
                     traded_this_symbol = True
 
-            # --- SMC AS MAIN EXECUTION FUNCTION ---
-            # SMC Trader is the PRIMARY decision maker - 7-step checklist
-            # All other bot logic serves as FILTERS to approve/reject SMC signals
+            # --- STREAMLINED SMC EXECUTION - SINGLE SCORING ENGINE ---
             if not traded_this_symbol:
                 for direction in ["buy", "sell"]:
                     # 🔒 CRITICAL: Normalize direction (prevent bullish/bearish bugs)
@@ -27404,383 +27898,36 @@ def main_trading_loop():
                     except ValueError as e:
                         print(f"[DIRECTION ERROR] {symbol}: {e}")
                         continue
-                    
+
                     should_enter, entry_details = _smc_trader.check_entry(symbol, canonical_direction)
                     if should_enter:
-                        print(f"[SMC MAIN] {symbol} {canonical_direction.upper()} | SMC Entry validated | Details: {entry_details}")
-                        smc_validated_symbols[symbol] = True  # Mark that SMC validated this entry
+                        print(f"[SMC DETECTED] {symbol} {canonical_direction.upper()} | SMC Entry validated")
 
-                        # Mandatory sweep + location + quality gates
-                        sweep_present = bool(
-                            entry_details.get("sweep_detected")
-                            or entry_details.get("liquidity_sweep")
-                            or entry_details.get("sweep")
-                            or entry_details.get("sweep_side")
-                            or entry_details.get("swept_side")
+                        # === SINGLE TRADE SCORING ENGINE ===
+                        # One score decides everything. No scattered approvals.
+                        final_score, decision, reasons = _trade_scorer.calculate_trade_score(
+                            symbol, canonical_direction, entry_details,
+                            df_h4=get_price_data(symbol, timeframe="H4", bars=100),
+                            df_h1=get_price_data(symbol, timeframe="H1", bars=200),
+                            df_m15=get_price_data(symbol, timeframe="M15", bars=50)
                         )
-                        if not sweep_present:
-                            print(f"[SMC BLOCKED] {symbol} {canonical_direction.upper()} | Missing liquidity sweep confirmation")
-                            continue
 
-                        # === MANDATORY: Location Confirmation Check ===
-                        location_ok = _smc_location_gate(canonical_direction, entry_details, price)
-                        if location_ok is False:
-                            print(f"[SMC BLOCKED] {symbol} {canonical_direction.upper()} | ❌ LOCATION CONFIRMATION FAILED - Price not in required discount/premium location")
-                            continue
-                        else:
-                            print(f"[SMC VALIDATED] {symbol} {canonical_direction.upper()} | ✓ Location confirmation PASSED")
+                        print(f"[TRADE SCORE] {symbol} {canonical_direction.upper()} | Score: {final_score:.0f}/100 | Decision: {decision} | Reasons: {', '.join(reasons)}")
 
-                        # === MANDATORY: Candle Confirmation Check ===
-                        candle_confirmed, candle_reason = is_entry_candle_valid({"symbol": symbol, "direction": canonical_direction, "price": price, "entry_details": entry_details})
-                        if not candle_confirmed:
-                            print(f"[SMC BLOCKED] {symbol} {canonical_direction.upper()} | ❌ CANDLE CONFIRMATION FAILED - {candle_reason}")
-                            continue
-                        else:
-                            print(f"[SMC VALIDATED] {symbol} {canonical_direction.upper()} | ✓ Candle confirmation PASSED")
-
-                        min_quality_score = globals().get("MIN_QUALITY_SCORE", 5)
-                        quality_score = entry_details.get("quality_score")
-                        if quality_score is None:
-                            quality_score = entry_details.get("quality")
-                        if quality_score is None:
-                            quality_score = entry_details.get("score")
-                        if quality_score is not None and quality_score < min_quality_score:
-                            print(
-                                f"[SMC BLOCKED] {symbol} {canonical_direction.upper()} | Quality {quality_score:.2f} below minimum {min_quality_score}"
-                            )
-                            continue
-
-                        # 🔒 CRITICAL: Hard safety gate (no degradation)
-                        if not require_trading_safe({"symbol": symbol, "direction": canonical_direction}):
-                            print(f"[TRADE BLOCKED] {symbol}: Critical systems failed")
-                            continue
-                        
-                        # === APPLY FILTERS ===
-                        filters_passed = True
-                        filter_reasons = []
-                        
-                        # 1. Anti-Revenge Filter
-                        can_enter_after_sl, revenge_reason = _anti_revenge_filter.can_enter_after_sl(symbol, canonical_direction)
-                        if not can_enter_after_sl:
-                            filters_passed = False
-                            filter_reasons.append(f"Anti-Revenge: {revenge_reason}")
-                        
-                        # 2. Counter-Trend Safety
-                        counter_trend_check = check_counter_trend_rules(symbol, canonical_direction, entry_details.get("entry_price", price))
-                        if not counter_trend_check["is_safe"]:
-                            filters_passed = False
-                            filter_reasons.append(f"Counter-Trend: {counter_trend_check['reason']}")
-                        
-                        # 3. Multi-Entry Tracker
-                        can_enter_multi, multi_reason = _multi_entry_tracker.can_enter(symbol, canonical_direction)
-                        if not can_enter_multi:
-                            filters_passed = False
-                            filter_reasons.append(f"Multi-Entry: {multi_reason}")
-                        
-                        # 4. Session Limits (already checked globally, but symbol-specific)
-                        if _anti_revenge_filter.is_session_limit_reached(symbol):
-                            filters_passed = False
-                            filter_reasons.append("Session limit reached")
-                        
-                        # 5. SL Distance Validation (news volatility protection)
-                        sl_price = entry_details.get("sl")
-                        entry_price = entry_details.get("entry_price", price)
-                        if sl_price and entry_price:
-                            atr = entry_details.get("atr", 10.0)  # Default ATR if missing
-                            is_valid_sl, sl_reason = validate_sl_distance(symbol, entry_price, sl_price, atr)
-                            if not is_valid_sl:
-                                filters_passed = False
-                                filter_reasons.append(f"SL Distance: {sl_reason}")
-                        
-                        if filters_passed:
-                            print(f"[SMC EXECUTE] {symbol} {canonical_direction.upper()} | All filters passed | Executing trade")
-                            # Place trade using entry details
+                        if decision == 'TRADE':
+                            # Execute trade - all filters passed via scoring
                             entry_price = entry_details.get("entry_price", price)
                             sl = entry_details.get("sl")
                             tp = entry_details.get("tp")
                             lot = entry_details.get("lot", 0.01)
+
+                            print(f"[TRADE EXECUTED] {symbol} {canonical_direction.upper()} | Entry: {entry_price:.5f} | SL: {sl:.5f} | TP: {tp:.5f}")
                             execute_trade(symbol, canonical_direction, sl=sl, tp=tp, lot=lot)
                             traded_this_symbol = True
                             break
                         else:
-                            print(f"[SMC FILTERED] {symbol} {direction.upper()} | Filters failed: {', '.join(filter_reasons)}")
-                            # Continue to next direction or skip
-
-            # --- ML/TA/Pattern/Confluence Signal Block ---
-            if ENABLE_ML_TA and not traded_this_symbol:
-                df = get_price_data(symbol, bars=100)
-                if df is None or len(df) < 20:
-                    print(f"[SKIP] Not enough data for {symbol}.")
-                    continue
-
-                # Pattern counting block
-                pattern_counts = {
-                    'bullish': 0,
-                    'bearish': 0,
-                    'cdl_hammer': 0,
-                    'cdl_morning_star': 0,
-                    'cdl_three_white_soldiers': 0,
-                    'cdl_three_black_crows': 0,
-                    'cdl_shooting_star': 0,
-                    'cdl_evening_star': 0
-                }
-                for i in range(2, len(df)):
-                    window = df.iloc[i-2:i+1]
-                    pattern = detect_price_action_pattern(window)
-                    if pattern in pattern_counts:
-                        pattern_counts[pattern] += 1
-                print(f"[PATTERN COUNTS] {symbol}: {pattern_counts}")
-
-                features = get_features_fixed(df)
-
-                # --- ADVANCED FEATURE ENGINEERING (ALWAYS INCLUDE THIS BLOCK) ---
-                trend = detect_trend(df)
-                trendline_break = detect_trendline_break(df)
-                double_top = detect_double_top(df)
-                double_bottom = detect_double_bottom(df)
-                ma_cross = ma_crossover(df)
-                rsi_div = detect_rsi_divergence(df)
-                fib_levels = fibonacci_levels(df)
-                sr_levels = detect_sr_levels(df)
-                stochastic_k, stochastic_d = calculate_stochastic(df)
-                macd, macd_signal_line = calculate_macd(df)
-                macd_histogram = macd.iloc[-1] - macd_signal_line.iloc[-1] if hasattr(macd, "iloc") else 0
-                market_regime = detect_market_regime(df)
-                volume_profile_poc = detect_volume_profile(df)
-
-                features["trend"] = float(trend == "up")
-                features["trendline_break"] = float(trendline_break == "break_up")
-                features["double_top"] = float(double_top)
-                features["double_bottom"] = float(double_bottom)
-                features["ma_cross"] = float(ma_cross == "bullish")
-                features["rsi_div"] = float(rsi_div == "bullish")
-                features["fib_236"] = fib_levels[0] if len(fib_levels) > 0 else 0.0
-                features["fib_382"] = fib_levels[1] if len(fib_levels) > 1 else 0.0
-                features["fib_500"] = fib_levels[2] if len(fib_levels) > 2 else 0.0
-                features["fib_618"] = fib_levels[3] if len(fib_levels) > 3 else 0.0
-                features["fib_786"] = fib_levels[4] if len(fib_levels) > 4 else 0.0
-                features["sr_support"] = sr_levels["support"][0] if "support" in sr_levels else 0.0
-                features["sr_resistance"] = sr_levels["resistance"][0] if "resistance" in sr_levels else 0.0
-                features["stochastic_k"] = stochastic_k.iloc[-1] if hasattr(stochastic_k, "iloc") else 0.0
-                features["stochastic_d"] = stochastic_d.iloc[-1] if hasattr(stochastic_d, "iloc") else 0.0
-                features["macd_signal_line"] = macd_signal_line.iloc[-1] if hasattr(macd_signal_line, "iloc") else 0.0
-                features["macd_histogram"] = macd_histogram
-                features["market_regime"] = float(market_regime == "trend")
-                features["volume_profile_poc"] = volume_profile_poc
-
-                # Defensive: Ensure all features in KERAS_FEATURE_ORDER_20 are present
-                for k in KERAS_FEATURE_ORDER_20:
-                    if k not in features:
-                        features[k] = 0.0
-
-                entry_price = df['close'].iloc[-1]
-                # Respect test override to force session active when debugging/testing
-                session_ok = True if globals().get('TEST_FORCE_SESSION_ACTIVE', False) else is_session_open(symbol)
-                spread = features.get('spread', get_current_spread(symbol))
-                model = load_main_model(symbol)
-
-                # --- News filter: block trades on high-impact news ---
-                dt = df['time'].iloc[-1]
-                # if news_filter_blocked(symbol, dt):  # Uncomment if you have this function
-                #     print(f"[{symbol}] Blocked by news filter at {dt}")
-                #     continue
-
-                signal, confidence, pattern_ml = generate_trade_signal(df, features, model)
-                confidence = float(confidence)
-
-                # ========== ⚡ SIMPLIFIED DECISION PIPELINE ⚡ ==========
-                # Streamlined: Focus on core signals with clear hierarchy
-                # Priority: HTF Bias > ML Signal > Technical Confluence > Candle Confirmation
-
-                # Step 1: HTF Bias Check (must pass)
-                htf_bias_val = bias if 'bias' in locals() else None
-                if htf_bias_val not in ("bullish", "bearish"):
-                    htf_bias_ok = True  # If unknown, allow but rely on ML confidence gate
-                else:
-                    htf_bias_ok = True
-                if not htf_bias_ok:
-                    print(f"[{symbol}] HTF bias blocks trade.")
-                    continue
-
-                # Step 2: ML Signal Check (primary signal)
-                if signal not in ("buy", "sell") or confidence < MIN_ML_CONFIDENCE:
-                    print(f"[{symbol}] ML signal weak or absent (signal={signal}, conf={confidence:.2f}).")
-                    continue
-
-                # Step 2b: HTF vs ML arbitration
-                if not ml_htf_allows_trade(htf_bias_val, signal, confidence):
-                    print(f"[{symbol}] ML {signal} (conf={confidence:.2f}) conflicts with HTF {htf_bias_val}; skipping.")
-                    continue
-
-                # Step 3: Technical Confluence Check (FVG + MTF)
-                score = features.get("confluence_score", 10.0)
-                if score < 7:  # Simplified threshold
-                    print(f"[{symbol}] Technical confluence insufficient (score={score}).")
-                    continue
-
-                # Step 4: Candle Confirmation (final gate)
-                # (Keep minimal candle check here)
-
-                # If all pass, proceed to trade
-                print(f"[{symbol}] All checks passed. Proceeding to trade.")
-
-                # Simplified: Skip complex layers and go straight to trade execution
-                # (Remove or disable: counter-trend, regime, spread, etc. checks for now)
-            
-            # ========== ⚡ COUNTER-TREND SAFETY CHECK ⚡ ==========
-            # Optional: Block trades against main H1 trend unless they meet strict criteria
-            ENFORCE_COUNTER_TREND_SAFETY = False  # Disabled for streamlined pipeline
-            counter_trend_safe = True
-            counter_trend_reason = "NOT_COUNTER_TREND"
-            
-            if ENFORCE_COUNTER_TREND_SAFETY and signal in ("buy", "sell"):
-                try:
-                    # Use H1/M5 data from trend logic if available, else reload
-                    if df_h1 is None or df_m5 is None:
-                        df_h1 = get_price_data(symbol, timeframe="H1", bars=200) if 'get_price_data' in globals() else None
-                        df_m5 = get_price_data(symbol, timeframe="M5", bars=500) if 'get_price_data' in globals() else None
-                    
-                    if df_h1 is not None and len(df_h1) >= 10:
-                        current_price = df['close'].iloc[-1]
-                        
-                        # Check counter-trend rules
-                        counter_check = check_counter_trend_rules(
-                            symbol=symbol,
-                            direction=signal,
-                            df_h1=df_h1,
-                            df_m5=df_m5,
-                            current_price=current_price,
-                            tracker=_counter_trend_tracker,
-                            verbose=False  # Set to True for debugging
-                        )
-                        
-                        counter_trend_reason = counter_check.get("reason", "UNKNOWN")
-                        
-                        # If it's a counter-trend trade and not safe, BLOCK IT
-                        if counter_check.get("is_counter_trend", False):
-                            counter_trend_safe = counter_check.get("is_safe", False)
-                            
-                            if not counter_trend_safe:
-                                print(f"[COUNTER-TREND BLOCK] {symbol} {signal.upper()} | {counter_trend_reason}")
-                                record_filter(symbol, "COUNTER_TREND_SAFETY", False, counter_trend_reason)
-                                continue
-                            else:
-                                print(f"[COUNTER-TREND ✅] {symbol} {signal.upper()} | {counter_trend_reason}")
-                                # Record position as counter-trend for tracking
-                                _counter_trend_tracker.add_counter_trend_position(
-                                    symbol=symbol,
-                                    direction=signal,
-                                    entry_price=current_price,
-                                    h1_trend=counter_check.get("h1_trend", "unknown")
-                                )
-                        else:
-                            # Trend-aligned trade, no counter-trend rules apply
-                            pass
-                        
-                        record_filter(symbol, "COUNTER_TREND_SAFETY", counter_trend_safe, counter_trend_reason)
-                    
-                except Exception as e:
-                    counter_trend_reason = f"ERROR: {str(e)}"
-                    print(f"[COUNTER-TREND ERROR] {symbol}: {e}")
-                    record_filter(symbol, "COUNTER_TREND_SAFETY", False, counter_trend_reason)
-
-            
-            regime = detect_regime(df)
-            regime_filter_ok = True
-            # Disabled regime filter for streamlined pipeline - HTF bias handles trend detection
-            # if symbol in ["GBPUSD.m", "AUDUSD.m"]:
-            #     if regime != "trend":
-            #         print(f"[{symbol}] Skipping trade: Not in trend regime (regime={regime})")
-            #         regime_filter_ok = False
-            #         record_filter(symbol, "REGIME_FILTER", False, f"regime={regime}")
-            #         continue
-            record_filter(symbol, "REGIME_FILTER", regime_filter_ok, f"regime={regime}")
-
-            print(f"[ENTRY DEBUG] {symbol} | ML: {signal} | Confidence: {confidence:.2f} | Pattern: {pattern_ml} | TrendLogic: {trend_logic_reason} | SessionOK: {session_ok}")
-
-            if not session_ok:
-                print(f"[{symbol}] No trade: Session not valid")
-                record_filter(symbol, "SESSION_FILTER", False, "session_not_valid")
-                continue
-            record_filter(symbol, "SESSION_FILTER", True, "session_valid")
-
-            if spread > 0.0003:
-                print(f"[{symbol}] No trade: Spread too high ({spread:.5f})")
-                record_filter(symbol, "SPREAD_FILTER", False, f"spread={spread:.6f}")
-                continue
-            record_filter(symbol, "SPREAD_FILTER", True, f"spread={spread:.6f}")
-
-            if not can_trade_today():
-                print(f"[RISK] Daily loss cap hit, skipping trading for today.")
-                record_filter(symbol, "DAILY_LOSS_CAP", False, "daily_limit_reached")
-                continue
-            record_filter(symbol, "DAILY_LOSS_CAP", True, "within_daily_limit")
-
-            atr = features.get('atr', 0.001)
-            # Use robust SL/TP logic: TP should always be further from entry than SL (reward > risk)
-            if signal in ("buy", "sell"):
-                account_balance = get_account_balance() if 'get_account_balance' in globals() else 1000
-                sl, tp, lot_size = get_trade_params(symbol, entry_price, atr, account_balance, direction=signal)
-                sl = round(sl, 5)
-                tp = round(tp, 5)
-                # Optionally: print(f"[DEBUG SL/TP] {symbol} {signal} | Entry: {entry_price} | SL: {sl} | TP: {tp}")
-            else:
-                sl = tp = None
-
-            def get_confidence_threshold(symbol):
-                if symbol in ["GBPUSD.m", "AUDUSD.m"]:
-                    return 0.85
-                elif symbol in ["EURUSD.m", "EURUSD"]:
-                    return 0.70
-                return 0.75
-
-            # ⚡ FIX #4: DISPLACEMENT FILTER - Require REAL momentum (no chop) ⚡
-            # Disabled for streamlined pipeline - candle confirmation handles momentum
-            displacement_ok = True
-            displacement_reason = "DISABLED_FOR_STREAMLINED_PIPELINE"
-            # displacement_ok, displacement_reason, current_range, avg_range = check_displacement(symbol, df)
-            # if not displacement_ok:
-            #     print(f"[{symbol}] No trade: {displacement_reason}")
-            #     record_filter(symbol, "DISPLACEMENT_FILTER", False, displacement_reason)
-            #     continue
-            record_filter(symbol, "DISPLACEMENT_FILTER", True, f"{displacement_reason}")
-
-            # ⚡ FIX #5: ENTRY COOLDOWN - Prevent stacked entries ⚡
-            # Disabled for streamlined pipeline - let the bot trade more frequently
-            cooldown_ok = True
-            cooldown_reason = "DISABLED_FOR_STREAMLINED_PIPELINE"
-            # cooldown_ok, cooldown_reason, elapsed, remaining = check_entry_cooldown(symbol, min_cooldown_seconds=60, max_cooldown_seconds=120)
-            # if not cooldown_ok:
-            #     print(f"[{symbol}] No trade: {cooldown_reason}")
-            #     record_filter(symbol, "COOLDOWN_FILTER", False, cooldown_reason)
-            #     record_filter(symbol, "COOLDOWN_FILTER", False, cooldown_reason)
-            #     continue
-            record_filter(symbol, "COOLDOWN_FILTER", True, cooldown_reason)
-
-            should_trade, pattern_used = trade_entry_filter(
-                symbol=symbol,
-                signal=signal,
-                confidence=confidence,
-                features=features,
-                entry=entry_price,
-                sl=sl,
-                tp=tp,
-                min_confidence=get_confidence_threshold(symbol)
-            )
-            
-            # Record final entry filter decision
-            record_filter(symbol, "TRADE_ENTRY_FILTER", should_trade, pattern_used)
-
-            if should_trade:
-                lot = features.get("smart_lot", 0.01)
-                placed = place_trade(symbol, signal, entry_price, atr)
-                if placed:
-                    print(f"[{symbol}] Trade placed: {signal.upper()} | Pattern: {pattern_used} | Confidence: {confidence:.2f} | Displacement: {displacement_reason}")
-                    send_telegram_alert(
-                        f"Trade Placed: {symbol} {signal.upper()} | Entry: {entry_price:.5f} | SL: {sl:.5f} | TP: {tp:.5f} | Pattern: {pattern_used} | Confidence: {confidence:.2f}"
-                    )
-            else:
-                print(f"[{symbol}] No trade: {pattern_used}")
+                            print(f"[TRADE SKIPPED] {symbol} {canonical_direction.upper()} | Score too low: {final_score:.0f}/100")
+                            continue
 
         # --- Trade management loop: trailing stop, partial TP, time-based exit ---
         if not enforce_trading_limits():
